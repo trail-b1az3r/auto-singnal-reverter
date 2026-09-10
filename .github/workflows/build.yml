@@ -1,0 +1,94 @@
+# Build, test and release the RF Analyzer FAP in a single workflow.
+#
+#  - push / PR  -> build the .fap, run tests, upload it as a CI artifact
+#  - push a tag matching v*  -> additionally publish a GitHub Release with the .fap
+#
+# The FAP is built with ufbt (the Flipper Zero micro-build tool), which pulls
+# the matching firmware SDK automatically.
+name: Build, Test & Release
+
+on:
+  push:
+    branches: ["main", "claude/**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+# Needed so the release step can create releases / upload assets.
+permissions:
+  contents: write
+
+jobs:
+  build-test-release:
+    name: Build, test & release
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rf_analyzer
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ufbt
+        run: python -m pip install --upgrade ufbt
+
+      # --- TEST 1: static guard ---------------------------------------------
+      # This application is receive-only by design. Fail the build if any
+      # Sub-GHz transmit API ever appears in the sources, so a TX path cannot
+      # be introduced by accident (or otherwise) without CI catching it.
+      - name: Test - assert receive-only (no transmit APIs)
+        run: |
+          if grep -rInE \
+            'start_async_tx|furi_hal_subghz_tx|subghz_transmitter|_async_tx\(|flipper_format.*_tx' \
+            --include='*.c' --include='*.h' .; then
+            echo "::error::Transmit API reference found - this app must remain receive-only."
+            exit 1
+          fi
+          echo "OK: no transmit APIs present."
+
+      # --- TEST 2: formatting -----------------------------------------------
+      # Report clang-format issues but don't fail the build on style alone.
+      - name: Test - lint (formatting, non-blocking)
+        run: ufbt lint || echo "::warning::ufbt lint reported formatting differences."
+        continue-on-error: true
+
+      # --- BUILD ------------------------------------------------------------
+      # A clean compile against the real SDK is the primary functional test:
+      # if the app does not build, the job fails here.
+      - name: Build FAP
+        run: ufbt
+
+      - name: Test - verify build output
+        run: |
+          test -f dist/rf_analyzer.fap
+          ls -la dist/
+          echo "OK: dist/rf_analyzer.fap produced."
+
+      # --- ARTIFACT (every run) ---------------------------------------------
+      - name: Upload FAP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rf_analyzer-fap
+          path: rf_analyzer/dist/rf_analyzer.fap
+          if-no-files-found: error
+
+      # --- RELEASE (tags only) ----------------------------------------------
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: rf_analyzer/dist/rf_analyzer.fap
+          generate_release_notes: true
+          body: |
+            RF Analyzer (RX) — receive-only Flipper Zero Sub-GHz research tool.
+
+            Install: copy `rf_analyzer.fap` to `/ext/apps/Sub-GHz/` on the SD card,
+            or run `ufbt launch` from the `rf_analyzer/` source directory.
+
+            This build is receive-only: it scans, measures, captures and decodes
+            signals. It does not transmit, replay or jam.
