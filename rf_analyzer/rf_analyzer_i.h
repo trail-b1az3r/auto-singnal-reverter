@@ -18,6 +18,7 @@
 #include <gui/modules/widget.h>
 #include <notification/notification.h>
 #include <notification/notification_messages.h>
+#include <lib/subghz/devices/devices.h>
 
 #include "helpers/rf_analyzer_types.h"
 #include "helpers/rf_analyzer_scanner.h"
@@ -59,12 +60,6 @@ typedef struct {
     // Currently selected signal / analyze target
     uint8_t selected_signal;
     uint32_t analyze_freq;
-
-    // Latest decode result (copied out of the worker callback for display)
-    FuriString* last_decode_proto;
-    FuriString* last_decode_text;
-    volatile bool decode_updated;
-    FuriMutex* decode_mutex;
 
     // Timer that refreshes the live scan view.
     FuriTimer* ui_timer;

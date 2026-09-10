@@ -2,139 +2,91 @@
 
 #include <furi.h>
 #include <furi_hal.h>
-
-#include <lib/subghz/subghz_worker.h>
-#include <lib/subghz/receiver.h>
-#include <lib/subghz/environment.h>
-#include <lib/subghz/protocols/registry.h>
-#include <lib/subghz/protocols/base.h>
-#include <lib/subghz/types.h>
+#include <lib/subghz/devices/devices.h>
 
 /*
- * Decode pipeline
- * ---------------
- * furi_hal async RX  ->  SubGhzWorker  ->  SubGhzReceiver  ->  protocol decoders
+ * Capture pipeline
+ * ----------------
+ * subghz_devices async RX delivers (level, duration) events straight to our
+ * callback, which runs in interrupt context. We keep the per-edge work tiny and
+ * allocation-free: bump counters and update min/max/sum for pulses that fall in
+ * a plausible Sub-GHz symbol window. The UI thread reads a consistent snapshot
+ * via rf_capture_get_stats().
  *
- *  - furi_hal_subghz_start_async_rx() delivers (level, duration) capture events
- *    to subghz_worker_rx_callback.
- *  - The worker buffers them and, on its own thread, hands each pair to
- *    subghz_receiver_decode (wired via the pair callback).
- *  - The receiver runs every registered decoder in parallel; when one reaches
- *    a complete, valid frame it fires our rx callback with the decoder.
- * We keep the filter at "Decodable" so only real, framed protocols are
- * reported — raw noise does not masquerade as a decode.
+ * "Qualifying" pulse window: ignore sub-microsecond glitches and multi-second
+ * gaps so the min/bitrate estimate reflects real modulation symbols rather than
+ * noise spikes or dead air.
  */
 
 #define TAG "RfCapture"
+#define RF_DEVICE_NAME "cc1101_int"
 
-// Standard location of the manufacturer keystore. Loading it lets some
-// protocols (e.g. rolling-code remotes) be named; absence is non-fatal.
-#define RF_KEYSTORE_PATH "/ext/subghz/assets/keeloq_mfcodes"
+#define RF_PULSE_MIN_US 50      // below this = glitch/noise, ignore
+#define RF_PULSE_MAX_US 100000  // above this = inter-frame gap, ignore
 
 struct RfCapture {
-    SubGhzEnvironment* environment;
-    SubGhzReceiver* receiver;
-    SubGhzWorker* worker;
-
+    const SubGhzDevice* device;
     volatile bool running;
-    volatile uint32_t edge_count;
+    RfPreset preset;
 
-    RfCaptureCallback callback;
-    void* callback_context;
+    // Updated from interrupt context. 32-bit scalar writes are atomic on the
+    // target, so the UI reads a coherent-enough snapshot without a lock.
+    volatile uint32_t edges;
+    volatile uint32_t min_us;
+    volatile uint32_t max_us;
+    volatile uint32_t sum_us;
+    volatile uint32_t count; // qualifying pulses (for the mean)
 };
 
-// Raw async-RX tap: runs in interrupt context. Counts level transitions as an
-// activity indicator, then forwards the sample to the Sub-GHz worker exactly as
-// the firmware expects. It only observes -- it cannot and does not transmit.
-static void rf_capture_rx_raw(bool level, uint32_t duration, void* context) {
+// Interrupt-context async-RX callback. Observes only; cannot transmit.
+static void rf_capture_rx_edge(bool level, uint32_t duration, void* context) {
+    UNUSED(level);
     RfCapture* capture = context;
-    capture->edge_count++;
-    subghz_worker_rx_callback(level, duration, capture->worker);
-}
+    capture->edges++;
 
-// Fired by the receiver when any decoder completes a frame.
-static void rf_capture_rx_callback(
-    SubGhzReceiver* receiver,
-    SubGhzProtocolDecoderBase* decoder_base,
-    void* context) {
-    RfCapture* capture = context;
+    if(duration < RF_PULSE_MIN_US || duration > RF_PULSE_MAX_US) return;
 
-    const char* name = "Unknown";
-    if(decoder_base && decoder_base->protocol && decoder_base->protocol->name) {
-        name = decoder_base->protocol->name;
-    }
-
-    // Ask the decoder for a human-readable rendering of the captured frame.
-    FuriString* text = furi_string_alloc();
-    subghz_protocol_decoder_base_get_string(decoder_base, text);
-
-    if(capture->callback) {
-        capture->callback(name, furi_string_get_cstr(text), capture->callback_context);
-    }
-
-    furi_string_free(text);
-
-    // Reset so the same decoder can catch the next repetition.
-    subghz_receiver_reset(receiver);
+    if(capture->min_us == 0 || duration < capture->min_us) capture->min_us = duration;
+    if(duration > capture->max_us) capture->max_us = duration;
+    capture->sum_us += duration;
+    capture->count++;
 }
 
 RfCapture* rf_capture_alloc(void) {
     RfCapture* capture = malloc(sizeof(RfCapture));
     memset(capture, 0, sizeof(RfCapture));
-
-    capture->environment = subghz_environment_alloc();
-    // Best-effort keystore load; ignore the result so a missing file does not
-    // stop plain protocol identification from working.
-    subghz_environment_load_keystore(capture->environment, RF_KEYSTORE_PATH);
-    subghz_environment_set_protocol_registry(
-        capture->environment, (void*)&subghz_protocol_registry);
-
-    capture->receiver = subghz_receiver_alloc_init(capture->environment);
-    subghz_receiver_set_filter(capture->receiver, SubGhzProtocolFlag_Decodable);
-    subghz_receiver_set_rx_callback(capture->receiver, rf_capture_rx_callback, capture);
-
-    capture->worker = subghz_worker_alloc();
-    subghz_worker_set_overrun_callback(
-        capture->worker, (SubGhzWorkerOverrunCallback)subghz_receiver_reset);
-    subghz_worker_set_pair_callback(
-        capture->worker, (SubGhzWorkerPairCallback)subghz_receiver_decode);
-    subghz_worker_set_context(capture->worker, capture->receiver);
-
     return capture;
 }
 
 void rf_capture_free(RfCapture* capture) {
     furi_assert(capture);
     rf_capture_stop(capture);
-    subghz_receiver_free(capture->receiver);
-    subghz_environment_free(capture->environment);
-    subghz_worker_free(capture->worker);
     free(capture);
-}
-
-void rf_capture_set_callback(RfCapture* capture, RfCaptureCallback cb, void* context) {
-    furi_assert(capture);
-    capture->callback = cb;
-    capture->callback_context = context;
 }
 
 bool rf_capture_start(RfCapture* capture, uint32_t freq, RfPreset preset) {
     furi_assert(capture);
     if(capture->running) return false;
-    if(!furi_hal_subghz_is_frequency_valid(freq)) return false;
 
-    capture->edge_count = 0;
-    subghz_receiver_reset(capture->receiver);
+    capture->device = subghz_devices_get_by_name(RF_DEVICE_NAME);
+    if(!capture->device) return false;
+    if(!subghz_devices_is_frequency_valid(capture->device, freq)) return false;
 
-    // Bring up the radio, select modulation, tune, then start streaming RX
-    // samples into the worker.
-    furi_hal_subghz_reset();
-    furi_hal_subghz_idle();
-    furi_hal_subghz_load_preset(rf_preset_to_hal(preset));
-    furi_hal_subghz_set_frequency_and_path(freq);
+    // Reset analysis state.
+    capture->edges = 0;
+    capture->min_us = 0;
+    capture->max_us = 0;
+    capture->sum_us = 0;
+    capture->count = 0;
+    capture->preset = preset;
 
-    subghz_worker_start(capture->worker);
-    furi_hal_subghz_start_async_rx(rf_capture_rx_raw, capture);
+    // Acquire radio, select modulation, tune, then stream RX edges to us.
+    subghz_devices_begin(capture->device);
+    subghz_devices_reset(capture->device);
+    subghz_devices_idle(capture->device);
+    subghz_devices_load_preset(capture->device, rf_preset_to_hal(preset), NULL);
+    subghz_devices_set_frequency(capture->device, freq);
+    subghz_devices_start_async_rx(capture->device, rf_capture_rx_edge, capture);
 
     capture->running = true;
     return true;
@@ -144,12 +96,10 @@ void rf_capture_stop(RfCapture* capture) {
     furi_assert(capture);
     if(!capture->running) return;
 
-    furi_hal_subghz_stop_async_rx();
-    subghz_worker_stop(capture->worker);
-
-    // Release the RF front-end.
-    furi_hal_subghz_idle();
-    furi_hal_subghz_sleep();
+    subghz_devices_stop_async_rx(capture->device);
+    subghz_devices_idle(capture->device);
+    subghz_devices_sleep(capture->device);
+    subghz_devices_end(capture->device);
 
     capture->running = false;
 }
@@ -158,6 +108,29 @@ bool rf_capture_is_running(RfCapture* capture) {
     return capture->running;
 }
 
-uint32_t rf_capture_edge_count(RfCapture* capture) {
-    return capture->edge_count;
+void rf_capture_get_stats(RfCapture* capture, RfCaptureStats* out) {
+    furi_assert(capture);
+    furi_assert(out);
+    // Snapshot the volatile fields once.
+    uint32_t cnt = capture->count;
+    uint32_t sum = capture->sum_us;
+    out->edges = capture->edges;
+    out->min_us = capture->min_us;
+    out->max_us = capture->max_us;
+    out->avg_us = cnt ? (sum / cnt) : 0;
+    // The shortest symbol approximates one bit period for simple OOK/FSK keying.
+    out->est_bitrate = capture->min_us ? (1000000UL / capture->min_us) : 0;
+}
+
+const char* rf_capture_modulation_hint(RfCapture* capture) {
+    switch(capture->preset) {
+    case RfPresetOok650:
+    case RfPresetOok270:
+        return "OOK/ASK";
+    case RfPreset2FskDev238:
+    case RfPreset2FskDev476:
+        return "2-FSK";
+    default:
+        return "?";
+    }
 }

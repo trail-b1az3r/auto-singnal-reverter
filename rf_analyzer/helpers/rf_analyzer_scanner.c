@@ -1,6 +1,7 @@
 #include "rf_analyzer_scanner.h"
 #include <furi.h>
 #include <furi_hal.h>
+#include <lib/subghz/devices/devices.h>
 
 /*
  * RF-processing logic (receive side)
@@ -15,9 +16,16 @@
  *      burst duration.
  * The radio is returned to sleep between sweeps and on stop, which releases the
  * RF front-end cleanly.
+ *
+ * All radio access goes through the firmware's subghz_devices abstraction (the
+ * supported external-app API), targeting the built-in CC1101. Only RX/idle/
+ * sleep are ever used; there is no transmit call.
  */
 
 #define TAG "RfScanner"
+
+// Internal-radio device name in the subghz device registry.
+#define RF_DEVICE_NAME "cc1101_int"
 
 // A single RSSI read settles in well under a millisecond; sample at this cadence.
 #define RF_SAMPLE_INTERVAL_MS 2
@@ -26,6 +34,8 @@ struct RfScanner {
     FuriThread* thread;
     volatile bool running;
     volatile bool stop_requested;
+
+    const SubGhzDevice* device;
 
     RfScanConfig config;
 
@@ -76,15 +86,20 @@ void rf_band_bounds(RfBand band, uint32_t* start, uint32_t* end) {
     }
 }
 
+// Coarse range check used before a scan and for UI validation, independent of
+// any radio handle. The per-frequency hardware check happens in the sweep.
+static bool rf_freq_in_supported_band(uint32_t f) {
+    return (f >= 300000000 && f <= 348000000) || (f >= 387000000 && f <= 464000000) ||
+           (f >= 779000000 && f <= 928000000);
+}
+
 const char* rf_scan_config_validate(const RfScanConfig* config) {
     if(!config) return "No config";
     if(config->freq_start > config->freq_end) return "Start > End";
     if(config->freq_step < 1000) return "Step < 1 kHz";
     if(config->dwell_ms < 2 || config->dwell_ms > 5000) return "Dwell out of range";
-    // Both ends must be tunable by the hardware. is_frequency_valid also
-    // enforces the region/regulatory frequency table built into the firmware.
-    if(!furi_hal_subghz_is_frequency_valid(config->freq_start)) return "Start not tunable";
-    if(!furi_hal_subghz_is_frequency_valid(config->freq_end)) return "End not tunable";
+    if(!rf_freq_in_supported_band(config->freq_start)) return "Start not tunable";
+    if(!rf_freq_in_supported_band(config->freq_end)) return "End not tunable";
     // Guard against a sweep so large it would never complete usefully.
     uint32_t span = config->freq_end - config->freq_start;
     if(span / config->freq_step > 100000) return "Too many steps";
@@ -100,10 +115,12 @@ static void rf_scanner_report(RfScanner* scanner, const RfSignal* signal) {
 // Sample one frequency for the configured dwell. Returns true if activity was
 // seen, filling `out` with the measurement.
 static bool rf_scanner_sample_freq(RfScanner* scanner, uint32_t freq, RfSignal* out) {
-    // Program synth + path and enter RX. set_frequency_and_path returns the
-    // actual programmed frequency, which can differ slightly from the request.
-    uint32_t actual = furi_hal_subghz_set_frequency_and_path(freq);
-    furi_hal_subghz_rx();
+    const SubGhzDevice* device = scanner->device;
+
+    // Program synth + path and enter RX. set_frequency returns the actual
+    // programmed frequency, which can differ slightly from the request.
+    uint32_t actual = subghz_devices_set_frequency(device, freq);
+    subghz_devices_set_rx(device);
 
     float peak = -127.0f;
     uint32_t above_start = 0;
@@ -113,7 +130,7 @@ static bool rf_scanner_sample_freq(RfScanner* scanner, uint32_t freq, RfSignal* 
     uint32_t deadline = furi_get_tick() + furi_ms_to_ticks(scanner->config.dwell_ms);
     while(furi_get_tick() < deadline) {
         if(scanner->stop_requested) break;
-        float rssi = furi_hal_subghz_get_rssi();
+        float rssi = subghz_devices_get_rssi(device);
         if(rssi > peak) peak = rssi;
 
         // Track contiguous time spent above the trigger to estimate burst length.
@@ -145,13 +162,15 @@ static bool rf_scanner_sample_freq(RfScanner* scanner, uint32_t freq, RfSignal* 
 
 static int32_t rf_scanner_thread(void* context) {
     RfScanner* scanner = context;
+    const SubGhzDevice* device = scanner->device;
 
-    // Bring the radio up, load the requested modulation preset once for the
+    // Acquire the radio and load the requested modulation preset once for the
     // whole sweep. RSSI measurement is preset-dependent (RX bandwidth), so the
     // chosen preset shapes what the sweep is sensitive to.
-    furi_hal_subghz_reset();
-    furi_hal_subghz_idle();
-    furi_hal_subghz_load_preset(rf_preset_to_hal(scanner->config.preset));
+    subghz_devices_begin(device);
+    subghz_devices_reset(device);
+    subghz_devices_idle(device);
+    subghz_devices_load_preset(device, rf_preset_to_hal(scanner->config.preset), NULL);
 
     while(!scanner->stop_requested) {
         for(uint32_t f = scanner->config.freq_start; f <= scanner->config.freq_end;
@@ -160,7 +179,7 @@ static int32_t rf_scanner_thread(void* context) {
 
             // Skip anything the hardware refuses mid-range instead of aborting
             // the whole sweep.
-            if(!furi_hal_subghz_is_frequency_valid(f)) continue;
+            if(!subghz_devices_is_frequency_valid(device, f)) continue;
 
             scanner->current_freq = f;
 
@@ -168,15 +187,16 @@ static int32_t rf_scanner_thread(void* context) {
             if(rf_scanner_sample_freq(scanner, f, &sig)) {
                 rf_scanner_report(scanner, &sig);
             }
-            furi_hal_subghz_idle();
+            subghz_devices_idle(device);
         }
         // Continuous sweep; the UI stops us. Yield briefly between passes.
         furi_delay_ms(1);
     }
 
     // Release the RF front-end cleanly.
-    furi_hal_subghz_idle();
-    furi_hal_subghz_sleep();
+    subghz_devices_idle(device);
+    subghz_devices_sleep(device);
+    subghz_devices_end(device);
 
     scanner->running = false;
     return 0;
@@ -207,6 +227,10 @@ bool rf_scanner_start(RfScanner* scanner, const RfScanConfig* config) {
     furi_assert(scanner);
     if(scanner->running) return false;
     if(rf_scan_config_validate(config) != NULL) return false;
+
+    // Resolve the built-in radio (subghz_devices_init() is done once by the app).
+    scanner->device = subghz_devices_get_by_name(RF_DEVICE_NAME);
+    if(!scanner->device) return false;
 
     scanner->config = *config;
     scanner->stop_requested = false;
