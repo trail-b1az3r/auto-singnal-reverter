@@ -67,30 +67,6 @@ static void rf_analyzer_on_signal(const RfSignal* signal, void* context) {
     notification_message(app->notifications, &sequence_blink_blue_10);
 }
 
-// Runs on the capture worker thread. Guard the shared decode strings with the
-// mutex the analyze scene reads them under.
-static void rf_analyzer_on_decode(const char* protocol, const char* details, void* context) {
-    RfAnalyzerApp* app = context;
-    furi_mutex_acquire(app->decode_mutex, FuriWaitForever);
-    furi_string_set(app->last_decode_proto, protocol);
-    furi_string_set(app->last_decode_text, details);
-    app->decode_updated = true;
-    furi_mutex_release(app->decode_mutex);
-
-    // Mark the matching session signal as decoded so the list reflects it.
-    for(uint8_t i = 0; i < app->signal_count; i++) {
-        uint32_t a = app->signals[i].frequency;
-        uint32_t diff = (a > app->analyze_freq) ? (a - app->analyze_freq)
-                                                : (app->analyze_freq - a);
-        if(diff <= RF_FREQ_MATCH_HZ) {
-            app->signals[i].decoded = true;
-            strncpy(app->signals[i].protocol, protocol, RF_ANALYZER_PROTO_NAME_LEN - 1);
-            app->signals[i].protocol[RF_ANALYZER_PROTO_NAME_LEN - 1] = '\0';
-        }
-    }
-    notification_message(app->notifications, &sequence_blink_green_10);
-}
-
 /* ---------- view dispatcher glue ---------- */
 
 static bool rf_analyzer_custom_event_cb(void* context, uint32_t event) {
@@ -141,16 +117,14 @@ static RfAnalyzerApp* rf_analyzer_app_alloc(void) {
     app->scan_view = rf_scan_view_alloc();
     view_dispatcher_add_view(app->view_dispatcher, RfViewScan, rf_scan_view_get_view(app->scan_view));
 
-    // Decode result buffers
-    app->last_decode_proto = furi_string_alloc();
-    app->last_decode_text = furi_string_alloc();
-    app->decode_mutex = furi_mutex_alloc(FuriMutexTypeNormal);
+    // Initialise the Sub-GHz device registry once so the engines can resolve
+    // the built-in CC1101 by name.
+    subghz_devices_init();
 
     // RF engines (receive only)
     app->scanner = rf_scanner_alloc();
     rf_scanner_set_callback(app->scanner, rf_analyzer_on_signal, app);
     app->capture = rf_capture_alloc();
-    rf_capture_set_callback(app->capture, rf_analyzer_on_decode, app);
 
     rf_analyzer_config_defaults(app);
     return app;
@@ -173,9 +147,7 @@ static void rf_analyzer_app_free(RfAnalyzerApp* app) {
     widget_free(app->widget);
     rf_scan_view_free(app->scan_view);
 
-    furi_string_free(app->last_decode_proto);
-    furi_string_free(app->last_decode_text);
-    furi_mutex_free(app->decode_mutex);
+    subghz_devices_deinit();
 
     scene_manager_free(app->scene_manager);
     view_dispatcher_free(app->view_dispatcher);

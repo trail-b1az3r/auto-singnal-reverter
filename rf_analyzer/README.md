@@ -28,7 +28,7 @@ Each detected signal records:
 Frequency: 433.920 MHz
 Signal:    Detected
 Strength:  -52 dBm
-Modulation: OOK 650kHz (preset) / decoded protocol name, or Unknown
+Modulation: OOK/ASK or 2-FSK (from the active demod preset)
 Duration:  128 ms
 Status:    Analyzed / Unknown
 ```
@@ -37,15 +37,16 @@ Status:    Analyzed / Unknown
 
 - **Official Flipper Zero firmware SDK** (the `flipperzero-firmware` release
   line). Developed against the stable API set exposed by:
-  - `furi_hal_subghz` — radio bring-up, tuning, RX, RSSI, async RX.
-  - `lib/subghz` — `SubGhzWorker`, `SubGhzReceiver`, `SubGhzEnvironment` and the
-    protocol registry for decoding.
+  - `lib/subghz/devices` (`subghz_devices_*`) — the supported external-app
+    radio API: bring-up, tuning, RX, RSSI and async RX on the built-in CC1101.
+  - Raw-timing analysis is done in-app from the async RX edge stream. Full
+    firmware protocol decoding is intentionally not used: its decoder registry
+    is not part of the public FAP SDK.
   - `gui` scene manager / view dispatcher, `notification`.
 - Built as an **external FAP** with `ufbt`.
 - These APIs are also present in the common community distributions
   (Unleashed / RogueMaster / Momentum). If you build against one of those,
-  confirm the `furi_hal_subghz` and `lib/subghz` symbol names match your SDK —
-  they occasionally rename presets or the `set_frequency` helper.
+  confirm the `subghz_devices_*` and preset enum names match your SDK.
 
 ## Build & install
 
