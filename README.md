@@ -2,10 +2,7 @@
 
 # RF Analyzer (RX) — Flipper Zero Sub-GHz research tool
 
-A **receive-only** native Flipper Zero application for authorized RF research:
-Sub-GHz frequency scanning, RSSI measurement, signal capture and protocol
-decoding using the Flipper's built-in CC1101 radio. It does **not** transmit,
-replay, respond to, or jam signals — there is no TX code path in the source.
+
 
 The application lives in [`rf_analyzer/`](rf_analyzer/). See
 [`rf_analyzer/README.md`](rf_analyzer/README.md) for features, build/install
