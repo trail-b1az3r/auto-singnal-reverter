@@ -1,3 +1,5 @@
+# NOT FOR ILLEGAL USES
+
 # RF Analyzer (RX) — Flipper Zero Sub-GHz research tool
 
 A **receive-only** native Flipper Zero application for authorized RF research:
