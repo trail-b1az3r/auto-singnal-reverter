@@ -1,1 +1,1 @@
-# auto-jammer-
+# NOT FOR ILLIGAL USES
