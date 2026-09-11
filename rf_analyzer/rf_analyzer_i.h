@@ -4,9 +4,9 @@
  * Internal application definition for the RF Analyzer.
  *
  * Holds the GUI plumbing (view dispatcher + scene manager), the receive-side
- * engines (scanner and capture) and the in-memory session state (detected
- * signals and the saved frequency list). There is deliberately no transmitter,
- * no TX buffer and no replay/response state anywhere in this application.
+ * engines (scanner and capture), the gated TX engine used only by the
+ * optional Auto Inverse Test mode, and the in-memory session state (detected
+ * signals and the saved frequency list).
  */
 
 #include <furi.h>

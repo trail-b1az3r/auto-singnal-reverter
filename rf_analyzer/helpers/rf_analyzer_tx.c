@@ -1,37 +1,62 @@
 #include "rf_analyzer_tx.h"
+
 #include <furi.h>
 #include <furi_hal.h>
 #include <lib/subghz/devices/devices.h>
+#include <lib/toolbox/level_duration.h>
+
+/*
+ * TX engine implementation.
+ *
+ * Uses only SDK-published APIs: subghz_devices_* for radio bring-up/tuning
+ * plus its async TX stream, which consumes LevelDuration items from the
+ * callback (level_duration_make / level_duration_reset). This mirrors how the
+ * system Sub-GHz application streams RAW captures for transmission.
+ */
 
 #define TAG "RfTxEngine"
 #define RF_DEVICE_NAME "cc1101_int"
 
 // Minimum pulse width the CC1101 can reliably generate (depends on data rate)
 #define RF_TX_MIN_PULSE_US 50
-// Maximum total waveform duration we'll attempt to transmit
-#define RF_TX_MAX_WAVEFORM_US 5000000 // 5 seconds
 
 struct RfTxEngine {
     const SubGhzDevice* device;
     volatile bool transmitting;
     volatile bool emergency_stop;
 
-    // TX callback state (used during transmission)
+    // TX stream state, consumed by the async callback.
     const RfTxWaveform* current_waveform;
-    uint16_t current_edge_idx;
+    volatile uint16_t current_edge_idx;
 };
 
-// Static callback for async TX - uses engine's stored state
-static void rf_tx_async_callback(bool* level, uint32_t* duration, void* context) {
+// Async-TX callback. Yields one LevelDuration per call; returns
+// level_duration_reset() once the prepared waveform is exhausted, which
+// signals end-of-stream to the firmware TX worker.
+static LevelDuration rf_tx_async_callback(void* context) {
     RfTxEngine* engine = context;
-    if(engine->current_waveform && engine->current_edge_idx < engine->current_waveform->edge_count) {
-        *level = engine->current_waveform->edges[engine->current_edge_idx].level;
-        *duration = engine->current_waveform->edges[engine->current_edge_idx].duration_us;
-        engine->current_edge_idx++;
-    } else {
-        // Signal end of transmission
-        *level = false;
-        *duration = 0;
+    const RfTxWaveform* waveform = engine->current_waveform;
+    uint16_t idx = engine->current_edge_idx;
+
+    if((waveform != NULL) && (idx < waveform->edge_count)) {
+        engine->current_edge_idx = idx + 1;
+        return level_duration_make(
+            waveform->edges[idx].level, waveform->edges[idx].duration_us);
+    }
+    return level_duration_reset();
+}
+
+static bool rf_tx_is_frequency_valid(const SubGhzDevice* device, uint32_t freq) {
+    return subghz_devices_is_frequency_valid(device, freq);
+}
+
+static FuriHalSubGhzPreset rf_tx_preset_for_modulation(RfModulation mod) {
+    switch(mod) {
+    case RfMod2FSK:
+        return FuriHalSubGhzPreset2FSKDev476Async;
+    case RfModOOK:
+    default:
+        return FuriHalSubGhzPresetOok650Async;
     }
 }
 
@@ -72,7 +97,8 @@ void rf_tx_emergency_stop(RfTxEngine* engine) {
 }
 
 // Analyze capture stats to determine modulation type and estimate bitrate
-static RfModulation rf_tx_classify_modulation(const RfCaptureStats* stats, const RfSignal* signal) {
+static RfModulation
+    rf_tx_classify_modulation(const RfCaptureStats* stats, const RfSignal* signal) {
     // Use the signal's preset as primary indicator
     switch(signal->preset) {
     case RfPresetOok650:
@@ -97,7 +123,6 @@ RfInvertResult rf_tx_generate_inverse(
     const RfCaptureStats* capture_stats,
     const RfSignal* signal,
     RfTxWaveform* out_waveform) {
-
     furi_assert(capture_stats);
     furi_assert(signal);
     furi_assert(out_waveform);
@@ -127,7 +152,8 @@ RfInvertResult rf_tx_generate_inverse(
     // Here we synthesize a plausible inverse based on measured timing.
     // This is a LIMITATION: without the full edge history, we approximate.
 
-    uint32_t pulse_us = capture_stats->avg_us ? capture_stats->avg_us : capture_stats->min_us;
+    uint32_t pulse_us =
+        capture_stats->avg_us ? capture_stats->avg_us : capture_stats->min_us;
     if(pulse_us < RF_TX_MIN_PULSE_US) pulse_us = RF_TX_MIN_PULSE_US;
     if(pulse_us > 100000) pulse_us = 100000; // Cap at 100ms per pulse
 
@@ -160,7 +186,10 @@ RfInvertResult rf_tx_generate_inverse(
 }
 
 // Transmit the prepared waveform using async TX
-RfInvertResult rf_tx_transmit_waveform(RfTxEngine* engine, const RfTxWaveform* waveform, uint32_t max_duration_ms) {
+RfInvertResult rf_tx_transmit_waveform(
+    RfTxEngine* engine,
+    const RfTxWaveform* waveform,
+    uint32_t max_duration_ms) {
     furi_assert(engine);
     furi_assert(waveform);
     furi_assert(waveform->valid);
@@ -174,6 +203,7 @@ RfInvertResult rf_tx_transmit_waveform(RfTxEngine* engine, const RfTxWaveform* w
 
     // Validate frequency against firmware restrictions
     if(!rf_tx_is_frequency_valid(engine->device, waveform->frequency)) {
+        engine->device = NULL;
         return RfInvertErrTxNotAllowed;
     }
 
@@ -181,7 +211,8 @@ RfInvertResult rf_tx_transmit_waveform(RfTxEngine* engine, const RfTxWaveform* w
     uint32_t waveform_ms = (waveform->total_duration_us + 999) / 1000;
     uint32_t tx_duration_ms = max_duration_ms;
     if(tx_duration_ms > waveform_ms) tx_duration_ms = waveform_ms;
-    if(tx_duration_ms > RF_AUTO_TEST_MAX_DURATION_MS) tx_duration_ms = RF_AUTO_TEST_MAX_DURATION_MS;
+    if(tx_duration_ms > RF_AUTO_TEST_MAX_DURATION_MS)
+        tx_duration_ms = RF_AUTO_TEST_MAX_DURATION_MS;
     if(tx_duration_ms == 0) tx_duration_ms = 1;
 
     // Acquire radio
@@ -194,16 +225,17 @@ RfInvertResult rf_tx_transmit_waveform(RfTxEngine* engine, const RfTxWaveform* w
     subghz_devices_load_preset(engine->device, preset, NULL);
 
     // Set frequency
-    uint32_t actual_freq = subghz_devices_set_frequency(engine->device, waveform->frequency);
-    (void)actual_freq; // Could warn if different, but continue
+    subghz_devices_set_frequency(engine->device, waveform->frequency);
 
     engine->transmitting = true;
     engine->emergency_stop = false;
     engine->current_waveform = waveform;
     engine->current_edge_idx = 0;
 
-    // Start async TX with our callback
-    bool started = subghz_devices_start_async_tx(engine->device, rf_tx_async_callback, engine);
+    // Start async TX with our LevelDuration stream callback.
+    // The devices API takes the callback as void*, so cast explicitly.
+    bool started = subghz_devices_start_async_tx(
+        engine->device, (void*)rf_tx_async_callback, engine);
     if(!started) {
         subghz_devices_idle(engine->device);
         subghz_devices_sleep(engine->device);
@@ -219,9 +251,12 @@ RfInvertResult rf_tx_transmit_waveform(RfTxEngine* engine, const RfTxWaveform* w
     uint32_t start_tick = furi_get_tick();
     uint32_t timeout_ticks = furi_ms_to_ticks(tx_duration_ms + 100); // Small margin
 
-    while(furi_get_tick() - start_tick < timeout_ticks) {
+    while((furi_get_tick() - start_tick) < timeout_ticks) {
         if(engine->emergency_stop) break;
-        if(engine->current_edge_idx >= engine->current_waveform->edge_count) break; // All edges sent
+        if(engine->current_edge_idx >= waveform->edge_count) {
+            // All edges queued; wait for the worker to drain, then finish.
+            if(subghz_devices_is_async_complete_tx(engine->device)) break;
+        }
         furi_delay_ms(1);
     }
 

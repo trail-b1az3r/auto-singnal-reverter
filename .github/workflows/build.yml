@@ -37,7 +37,20 @@ jobs:
       - name: Install ufbt
         run: python -m pip install --upgrade ufbt
 
-      # --- TEST 1: static guard ---------------------------------------------
+      # --- TEST 1: TX safeguards guard --------------------------------------
+      # The Auto Inverse Test mode intentionally uses subghz async TX, so the
+      # old receive-only grep is obsolete. Instead assert the safeguards that
+      # must always accompany the TX path: disabled-by-default, emergency
+      # stop, cooldown enforcement and the prominent AUTO TX indicator.
+      - name: Test - assert Auto Inverse Test safeguards present
+        run: |
+          set -e
+          grep -rIn "remove_all_restrictions" --include='*.h' --include='*.c' . >/dev/null
+          grep -rIn "rf_tx_emergency_stop" --include='*.c' --include='*.h' . >/dev/null
+          grep -rIn "cooldown" --include='*.c' --include='*.h' scenes helpers >/dev/null
+          grep -rIn "AUTO TX" --include='*.c' scenes >/dev/null
+          grep -rIn "enabled = false" --include='*.h' helpers >/dev/null
+          echo "OK: TX safeguard markers present."
 
       # --- TEST 2: formatting -----------------------------------------------
       # Report clang-format issues but don't fail the build on style alone.
@@ -73,10 +86,11 @@ jobs:
           files: rf_analyzer/dist/rf_analyzer.fap
           generate_release_notes: true
           body: |
-            RF Analyzer (RX) — receive-only Flipper Zero Sub-GHz research tool.
+            RF Analyzer — Flipper Zero Sub-GHz research tool with optional Auto Inverse Test.
 
             Install: copy `rf_analyzer.fap` to `/ext/apps/Sub-GHz/` on the SD card,
             or run `ufbt launch` from the `rf_analyzer/` source directory.
 
-            This build is receive-only: it scans, measures, captures and decodes
-            signals. It does not transmit, replay or jam.
+            Primary mode is receive-only (scan, measure, capture, analyze).
+            Auto Inverse Test (disabled by default) can transmit a bounded
+            inverse waveform for authorized lab equipment testing only.

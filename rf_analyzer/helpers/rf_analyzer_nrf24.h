@@ -3,44 +3,43 @@
 /*
  * NRF24 support for Auto Inverse Test.
  *
- * Provides NRF24L01+ transmit capability for inverse waveform testing.
- * Only active when user explicitly enables NRF24 mode in Auto Test config.
- * Uses Flipper's furi_hal_nrf24 API.
+ * Configuration + status plumbing for an NRF24L01+ test path. The channel and
+ * mode settings are functional UI; actual packet transmission needs an
+ * external NRF24 module plus a GPIO driver bundled with the app (the approach
+ * used by the catalog NRF24 scanner/mousejack apps).
+ *
+ * LIMITATION: the official Flipper Zero FAP SDK does not publish an
+ * furi_hal_nrf24-style HAL for external apps, so this build intentionally does
+ * NOT claim on-air NRF24 transmission. rf_nrf24_transmit_inverse() returns
+ * RfInvertErrUnsupportedModulation until such a driver is bundled, and the
+ * scene surfaces that status instead of transmitting.
  */
 
 #include "rf_analyzer_types.h"
-#include <furi_hal_nrf24.h>
 
-// NRF24 configuration for test mode
+// NRF24 configuration for test mode (plain types only — no HAL dependency).
 typedef struct {
-    uint8_t channel;          // RF channel (0-125), 2.4 GHz + channel MHz
-    uint8_t address[5];       // TX address (default: 0xE7E7E7E7E7)
-    uint8_t payload_size;     // Payload size in bytes (1-32)
-    FuriHalNrf24DataRate rate; // Data rate
-    FuriHalNrf24TxPower power; // TX power
-    bool auto_retry;          // Enable auto-retry (for testing only)
+    uint8_t channel; // RF channel (0-125)
+    uint8_t address[5]; // TX address (default: 0xE7E7E7E7E7)
+    uint8_t payload_size; // Payload size in bytes (1-32)
+    uint8_t data_rate; // 0 = 1 Mbps, 1 = 2 Mbps, 2 = 250 kbps
+    int8_t tx_power_dbm; // TX power in dBm (0, -6, -12, -18)
+    bool auto_retry; // Enable auto-retry (for testing only)
 } RfNrf24Config;
 
 // Default NRF24 config for inverse test
-static inline void rf_nrf24_config_defaults(RfNrf24Config* config) {
-    config->channel = 2;
-    config->address[0] = 0xE7;
-    config->address[1] = 0xE7;
-    config->address[2] = 0xE7;
-    config->address[3] = 0xE7;
-    config->address[4] = 0xE7;
-    config->payload_size = 32;
-    config->rate = FuriHalNrf24DataRate1M;
-    config->power = FuriHalNrf24TxPower0dBm;
-    config->auto_retry = false;
-}
+void rf_nrf24_config_defaults(RfNrf24Config* config);
 
-// Initialize NRF24 for TX
+// Initialize NRF24 for TX (stores config; returns true when usable).
 bool rf_nrf24_init(const RfNrf24Config* config);
 
-// Transmit inverse waveform via NRF24
-// Converts the edge-based waveform to NRF24 packets
-RfInvertResult rf_nrf24_transmit_inverse(const RfTxWaveform* waveform, uint8_t channel, uint32_t max_duration_ms);
+// Transmit inverse waveform via NRF24.
+// Currently a documented stub: returns RfInvertErrUnsupportedModulation
+// because the official SDK exposes no NRF24 HAL for external apps.
+RfInvertResult rf_nrf24_transmit_inverse(
+    const RfTxWaveform* waveform,
+    uint8_t channel,
+    uint32_t max_duration_ms);
 
 // Emergency stop NRF24 transmission
 void rf_nrf24_emergency_stop(void);

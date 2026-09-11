@@ -11,15 +11,19 @@
  * The waveform is a logical inverse (level flipped, timing preserved) of the
  * captured signal edges. Only OOK/ASK and simple 2-FSK are supported for
  * inverse generation; complex/unknown modulations are rejected.
+ *
+ * Implementation notes (real SDK APIs only):
+ * - Transport is subghz_devices_start_async_tx(), whose callback yields
+ *   LevelDuration items (level_duration_make / level_duration_reset from
+ *   lib/toolbox/level_duration.h), the same mechanism the system Sub-GHz app
+ *   uses for RAW transmission.
+ * - Per edge history is not retained by the capture engine, so the inverse is
+ *   synthesized from measured min/avg pulse timing (documented limitation).
  */
 
 #include "rf_analyzer_types.h"
 
-struct RfTxEngine {
-    const SubGhzDevice* device;
-    volatile bool transmitting;
-    volatile bool emergency_stop;
-};
+typedef struct RfTxEngine RfTxEngine;
 
 RfTxEngine* rf_tx_engine_alloc(void);
 void rf_tx_engine_free(RfTxEngine* engine);
@@ -29,23 +33,11 @@ RfInvertResult rf_tx_generate_inverse(
     const RfSignal* signal,
     RfTxWaveform* out_waveform);
 
-RfInvertResult rf_tx_transmit_waveform(RfTxEngine* engine, const RfTxWaveform* waveform, uint32_t max_duration_ms);
+RfInvertResult rf_tx_transmit_waveform(
+    RfTxEngine* engine,
+    const RfTxWaveform* waveform,
+    uint32_t max_duration_ms);
+
 void rf_tx_emergency_stop(RfTxEngine* engine);
 
 bool rf_tx_engine_is_transmitting(RfTxEngine* engine);
-
-// Internal helpers
-static inline bool rf_tx_is_frequency_valid(const SubGhzDevice* device, uint32_t freq) {
-    return subghz_devices_is_frequency_valid(device, freq);
-}
-
-static inline FuriHalSubGhzPreset rf_tx_preset_for_modulation(RfModulation mod) {
-    switch(mod) {
-    case RfModOOK:
-        return FuriHalSubGhzPresetOok650Async;
-    case RfMod2FSK:
-        return FuriHalSubGhzPreset2FSKDev476Async;
-    default:
-        return FuriHalSubGhzPresetOok650Async;
-    }
-}

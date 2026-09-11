@@ -179,7 +179,9 @@ restart the Auto Inverse Test.
 
 ## NRF24 mode notes
 
-When *NRF24 Mode* is enabled, the test uses the Flipper's NRF24L01+ module
-(2.4 GHz) instead of the Sub-GHz CC1101. The inverse waveform is packetized
-and sent as NRF24 packets. This is for testing NRF24-based equipment only.
-All same safeguards apply.
+*NRF24 Mode* currently stores channel/mode configuration only. The official
+FAP SDK exposes no NRF24 HAL for external apps, so selecting it reports
+"NRF24 needs ext module driver (no SDK HAL)" instead of transmitting — no
+packets leave the device. On-air NRF24 testing would require an externally
+wired module plus a GPIO driver bundled with the app (the approach used by
+catalog NRF24 scanner/mousejack apps), which is not vendored in this build.

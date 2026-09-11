@@ -32,8 +32,8 @@ void rf_analyzer_scene_about_on_enter(void* context) {
         "Use only on frequencies and equipment you own or are explicitly "
         "authorized to test, and follow RF regulations for your region.\n"
         "\n"
-        "Target: official Flipper Zero firmware SDK (lib/subghz subghz_devices, "
-        "furi_hal_nrf24). Built with ufbt.";
+        "Target: official Flipper Zero firmware SDK (lib/subghz subghz_devices)."
+        " Built with ufbt.";
     widget_add_text_scroll_element(w, 0, 16, 128, 48, body);
 
     view_dispatcher_switch_to_view(app->view_dispatcher, RfViewWidget);

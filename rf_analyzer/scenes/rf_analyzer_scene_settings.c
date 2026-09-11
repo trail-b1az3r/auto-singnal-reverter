@@ -153,6 +153,10 @@ static void auto_test_remove_all_restrictions_changed(VariableItem* item) {
     app->auto_test_config.remove_all_restrictions = idx;
 }
 
+static void settings_separator_changed(VariableItem* item) {
+    UNUSED(item);
+}
+
 // Map the current freq range back to a band index for display.
 static uint8_t current_band_index(RfAnalyzerApp* app) {
     for(uint8_t b = 0; b < RfBandCount; b++) {
@@ -231,8 +235,7 @@ void rf_analyzer_scene_settings_on_enter(void* context) {
     variable_item_set_current_value_text(item, rf_preset_name(app->config.preset));
 
     // --- Auto Inverse Test Settings ---
-    static void dummy_cb(VariableItem* item) { UNUSED(item); }
-    item = variable_item_list_add(list, "--- Auto Test ---", 1, dummy_cb, app);
+    item = variable_item_list_add(list, "--- Auto Test ---", 1, settings_separator_changed, app);
     variable_item_set_current_value_text(item, "");
 
     item = variable_item_list_add(list, "Auto Inverse", 2, auto_test_enabled_changed, app);

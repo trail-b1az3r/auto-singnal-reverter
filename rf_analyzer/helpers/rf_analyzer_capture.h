@@ -24,14 +24,7 @@
 
 typedef struct RfCapture RfCapture;
 
-// Snapshot of the timing analysis. All durations are in microseconds.
-typedef struct {
-    uint32_t edges;       // level transitions seen since start
-    uint32_t min_us;      // shortest qualifying pulse (0 if none yet)
-    uint32_t max_us;      // longest qualifying pulse
-    uint32_t avg_us;      // mean qualifying pulse width
-    uint32_t est_bitrate; // bits/sec estimated from the shortest symbol (0 if n/a)
-} RfCaptureStats;
+// RfCaptureStats is defined in rf_analyzer_types.h (shared with the TX engine).
 
 RfCapture* rf_capture_alloc(void);
 void rf_capture_free(RfCapture* capture);

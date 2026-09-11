@@ -27,7 +27,7 @@
 
 // Sub-GHz bands the CC1101 in the Flipper Zero can tune. These are the coarse
 // ranges the firmware's frequency table allows; the actual per-frequency
-// legality check is delegated to furi_hal_subghz_is_frequency_valid().
+// legality check is delegated to subghz_devices_is_frequency_valid().
 typedef enum {
     RfBand300 = 0, // 300.000 - 348.000 MHz
     RfBand433,     // 387.000 - 464.000 MHz
@@ -74,6 +74,17 @@ const char* rf_preset_name(RfPreset preset);
 FuriHalSubGhzPreset rf_preset_to_hal(RfPreset preset);
 const char* rf_band_name(RfBand band);
 void rf_band_bounds(RfBand band, uint32_t* start, uint32_t* end);
+
+// Snapshot of the timing analysis. All durations are in microseconds.
+// Defined here (rather than in rf_analyzer_capture.h) so both the capture
+// engine and the TX inverse generator can use it without a header cycle.
+typedef struct {
+    uint32_t edges; // level transitions seen since start
+    uint32_t min_us; // shortest qualifying pulse (0 if none yet)
+    uint32_t max_us; // longest qualifying pulse
+    uint32_t avg_us; // mean qualifying pulse width
+    uint32_t est_bitrate; // bits/sec estimated from the shortest symbol (0 if n/a)
+} RfCaptureStats;
 
 // Sub-GHz modulation types supported for TX inverse generation
 typedef enum {
@@ -140,26 +151,5 @@ typedef enum {
     RfInvertErrHardware,
 } RfInvertResult;
 
-// Forward declarations for TX engine
-struct RfTxEngine;
+// Forward declaration for the TX engine (full type lives in rf_analyzer_tx.c).
 typedef struct RfTxEngine RfTxEngine;
-
-RfTxEngine* rf_tx_engine_alloc(void);
-void rf_tx_engine_free(RfTxEngine* engine);
-
-// Generate inverse waveform from captured signal edges.
-// Returns RfInvertOk on success, fills waveform.
-RfInvertResult rf_tx_generate_inverse(
-    const RfCaptureStats* capture_stats,
-    const RfSignal* signal,
-    RfTxWaveform* out_waveform);
-
-// Transmit a prepared waveform. Blocks until done or error.
-// Returns RfInvertOk on success.
-RfInvertResult rf_tx_transmit_waveform(RfTxEngine* engine, const RfTxWaveform* waveform, uint32_t max_duration_ms);
-
-// Emergency stop any ongoing transmission.
-void rf_tx_emergency_stop(RfTxEngine* engine);
-
-// NRF24 TX support
-RfInvertResult rf_nrf24_transmit_inverse(const RfTxWaveform* waveform, uint8_t channel, uint32_t max_duration_ms);

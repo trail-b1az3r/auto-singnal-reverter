@@ -6,8 +6,11 @@
 /*
  * RF Analyzer — application entry point, wiring and session state.
  *
- * Receive-only by construction: the only RF engines instantiated are the
- * scanner (RSSI sweep) and the capture/decoder. No transmitter object exists.
+ * Receive-first by construction: the always-on engines are the scanner (RSSI
+ * sweep) and the capture/decoder. A TX engine exists solely for the optional
+ * Auto Inverse Test mode, which is disabled by default and gated by explicit
+ * user enable, a single configured test frequency, max TX duration, cooldown,
+ * decode requirement, emergency stop and firmware validity checks.
  */
 
 #define TAG "RfAnalyzer"

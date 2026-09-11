@@ -18,7 +18,7 @@ adds a controlled, gated transmit path for authorized laboratory equipment testi
    ├──────────────► Capture (subghz_devices async RX) ── timing on one freq
    │                    edge callback updates RfCaptureStats (interrupt ctx)
    │
-   ├──────────────► Auto Test TX (subghz_devices async TX / furi_hal_nrf24)
+   ├──────────────► Auto Test TX (subghz_devices async TX LevelDuration stream)
    │                    bounded inverse waveform transmission
    │
    └──────────────► UI timer (FuriTimer)  ── pulls live status @ 4–10 Hz,
@@ -27,8 +27,9 @@ adds a controlled, gated transmit path for authorized laboratory equipment testi
 
 The GUI thread never does RF work directly, so the interface stays responsive
 while a sweep, decode, or test transmission is running. The scanner, capture,
-and TX engines are mutually exclusive — each acquires the radio (CC1101 or
-NRF24) while its scene is active and releases it on scene exit.
+and TX engines are mutually exclusive — each acquires the CC1101 while its
+scene is active and releases it on scene exit. (The NRF24 path is a
+configuration stub: no NRF24 HAL exists in the official FAP SDK.)
 
 ## 1. Frequency discovery — the RSSI sweep (`helpers/rf_analyzer_scanner.c`)
 
@@ -106,14 +107,15 @@ RX MONITOR → DETECTED → ANALYZING → GENERATING → TRANSMITTING → COOLDO
 2. **DETECTED** — Edge count exceeds threshold (signal present above RSSI threshold).
 3. **ANALYZING** — Measure pulse timing, estimate bitrate, verify modulation support.
 4. **GENERATING** — Build logical inverse waveform:
-   - Modulation classified from RX preset (OOK/2-FSK/NRF24)
+   - Modulation classified from RX preset (OOK/2-FSK)
    - Edge sequence inverted: levels flipped (mark↔space), durations preserved
    - *Limitation:* Full edge history not captured; inverse synthesized from
      measured avg/min pulse width and estimated burst duration.
-5. **TRANSMITTING** — Send inverse via:
-   - **Sub-GHz:** `subghz_devices_start_async_tx()` with edge callback (CC1101)
-   - **NRF24:** `furi_hal_nrf24_tx()` packetized (NRF24L01+)
+5. **TRANSMITTING** — Send inverse via `subghz_devices_start_async_tx()`
+   with a LevelDuration stream callback (CC1101), the same mechanism the
+   system Sub-GHz app uses for RAW transmission.
    - Duration clamped to `tx_duration_ms` (max 10 s)
+   - NRF24 selection reports "needs ext module driver (no SDK HAL)" (stub)
    - Prominent `>>> AUTO TX <<<` displayed on screen
 6. **COOLDOWN** — Enforce `cooldown_ms` minimum gap (0–60 s, 0 only if override enabled)
 7. **Back to RX** — Resume monitoring on test frequency
@@ -132,7 +134,7 @@ RX MONITOR → DETECTED → ANALYZING → GENERATING → TRANSMITTING → COOLDO
 | AUTO TX indicator | Widget shows `>>> AUTO TX <<<` prominently during TX |
 | Exit cleanup | `rf_analyzer_app_free()` calls `rf_tx_engine_free()` + `rf_nrf24_deinit()` |
 | Firmware restrictions | `subghz_devices_is_frequency_valid()` checked before every TX |
-| NRF24 mode | Separate radio path, same safeguards, packetized transmission |
+| NRF24 mode | Settings plumbing only; TX stubbed (no NRF24 HAL in SDK) |
 
 ### TX waveform generation (`rf_tx_generate_inverse`)
 
@@ -150,8 +152,8 @@ Every code path that touches the radio pairs acquisition with release:
   (analyze) → stop_async_rx → idle → sleep → end`.
 - Auto Test TX (Sub-GHz): `begin → reset → idle → load_preset → set_frequency →
   start_async_tx → (transmit) → stop_async_tx → idle → sleep → end`.
-- Auto Test TX (NRF24): `furi_hal_nrf24_init() → set_channel/address/rate/power →
-  set_mode(TX) → (transmit packets) → set_mode(PowerDown) → deinit()`.
+- Auto Test TX (NRF24): stubbed — config stored, transmit returns
+  `RfInvertErrUnsupportedModulation` (no NRF24 HAL in the official SDK).
 - Scene `on_exit` handlers stop the active engine, and `rf_analyzer_app_free`
   stops all engines before freeing them, so exiting the app always leaves the
   radios in sleep/power-down.

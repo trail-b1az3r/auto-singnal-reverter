@@ -81,7 +81,8 @@ and without this mode enabled).
 - `>>> AUTO TX <<<` displayed prominently during transmission
 - App exit stops all TX and releases radio
 - Firmware frequency/power restrictions always respected
-- NRF24 mode available for 2.4 GHz NRF24L01+ testing
+- NRF24 mode setting available; on-air NRF24 TX is a documented stub (no NRF24
+  HAL in the official FAP SDK — needs an external module + bundled GPIO driver)
 
 ## Firmware / API target
 
@@ -89,7 +90,10 @@ and without this mode enabled).
   line). Developed against the stable API set exposed by:
   - `lib/subghz/devices` (`subghz_devices_*`) — the supported external-app
     radio API: bring-up, tuning, RX, RSSI, async RX, and async TX on CC1101.
-  - `furi_hal_nrf24` — NRF24L01+ radio API for 2.4 GHz mode.
+  - NRF24: settings plumbing only — the official FAP SDK publishes no NRF24
+    HAL, so `rf_nrf24_transmit_inverse()` is a stub returning
+    `RfInvertErrUnsupportedModulation` until an external-module GPIO driver is
+    bundled (the approach used by catalog NRF24 apps).
   - Raw-timing analysis is done in-app from the async RX edge stream. Full
     firmware protocol decoding is intentionally not used: its decoder registry
     is not part of the public FAP SDK.

@@ -1,7 +1,7 @@
 #include "../rf_analyzer_i.h"
 #include "rf_analyzer_scene_auto_test.h"
-#include "helpers/rf_analyzer_tx.h"
-#include "helpers/rf_analyzer_nrf24.h"
+#include "../helpers/rf_analyzer_tx.h"
+#include "../helpers/rf_analyzer_nrf24.h"
 
 /*
  * Auto Inverse Test Scene
@@ -129,33 +129,37 @@ static void auto_test_start_test(AutoTestContext* ctx) {
     RfAnalyzerApp* app = ctx->app;
     const RfAutoTestConfig* config = &app->auto_test_config;
 
-    // Validate configuration
+    // Validate configuration. The master enable gate always applies; the
+    // remaining entry checks are bypassed when remove_all_restrictions is set
+    // (the TX layer still enforces hardware/firmware validity per burst).
     if(!config->enabled) {
         snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Auto Test not enabled in settings");
         ctx->state = AutoStateError;
         return;
     }
 
-    if(!auto_test_check_frequency_valid(config->test_frequency)) {
-        snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Test frequency not allowed by firmware");
-        ctx->state = AutoStateError;
-        return;
-    }
+    if(!config->remove_all_restrictions) {
+        if(!auto_test_check_frequency_valid(config->test_frequency)) {
+            snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Test frequency not allowed by firmware");
+            ctx->state = AutoStateError;
+            return;
+        }
 
-    // Validate TX duration
-    if(config->tx_duration_ms < RF_AUTO_TEST_MIN_DURATION_MS ||
-       config->tx_duration_ms > RF_AUTO_TEST_MAX_DURATION_MS) {
-        snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Invalid TX duration");
-        ctx->state = AutoStateError;
-        return;
-    }
+        // Validate TX duration
+        if(config->tx_duration_ms < RF_AUTO_TEST_MIN_DURATION_MS ||
+           config->tx_duration_ms > RF_AUTO_TEST_MAX_DURATION_MS) {
+            snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Invalid TX duration");
+            ctx->state = AutoStateError;
+            return;
+        }
 
-    // Validate cooldown (unless override enabled)
-    if(!config->remove_cooldown_limit &&
-       config->cooldown_ms > RF_AUTO_TEST_MAX_COOLDOWN_MS) {
-        snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Cooldown too long (max 60s)");
-        ctx->state = AutoStateError;
-        return;
+        // Validate cooldown (unless override enabled)
+        if(!config->remove_cooldown_limit &&
+           config->cooldown_ms > RF_AUTO_TEST_MAX_COOLDOWN_MS) {
+            snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Cooldown too long (max 60s)");
+            ctx->state = AutoStateError;
+            return;
+        }
     }
 
     // Initialize TX engine if not NRF24
@@ -363,27 +367,38 @@ static void auto_test_state_machine(AutoTestContext* ctx) {
     }
 
     case AutoStateTransmitting: {
-        // Transmit the inverse waveform
-        // When remove_all_restrictions is enabled, bypass all limits
+        // Transmit the inverse waveform.
+        // Restricted mode uses the configured TX duration; bypass mode uses
+        // the maximum duration and skips the cooldown afterwards.
         RfInvertResult res;
         if(ctx->app->auto_test_config.remove_all_restrictions) {
-            // Bypass all limits: use max duration, no cooldown check, any frequency
-            (void)config; // Suppress unused warning
             if(config->nrf24_mode) {
-                res = rf_nrf24_transmit_inverse(&ctx->waveform, config->nrf24_channel, RF_AUTO_TEST_MAX_DURATION_MS);
+                res = rf_nrf24_transmit_inverse(
+                    &ctx->waveform, config->nrf24_channel, RF_AUTO_TEST_MAX_DURATION_MS);
             } else {
-                res = rf_tx_transmit_waveform(ctx->tx_engine, &ctx->waveform, RF_AUTO_TEST_MAX_DURATION_MS);
+                res = rf_tx_transmit_waveform(
+                    ctx->tx_engine, &ctx->waveform, RF_AUTO_TEST_MAX_DURATION_MS);
             }
-            // When restrictions are removed, skip cooldown entirely
-            ctx->state = AutoStateIdle; // Go directly back to idle, no cooldown
         } else {
-            res = RfInvertErrTxNotAllowed; // Will be handled below
+            if(config->nrf24_mode) {
+                res = rf_nrf24_transmit_inverse(
+                    &ctx->waveform, config->nrf24_channel, config->tx_duration_ms);
+            } else {
+                res = rf_tx_transmit_waveform(
+                    ctx->tx_engine, &ctx->waveform, config->tx_duration_ms);
+            }
         }
 
         if(res != RfInvertOk) {
             switch(res) {
             case RfInvertErrTxNotAllowed:
                 snprintf(ctx->error_msg, sizeof(ctx->error_msg), "TX blocked by firmware/hardware");
+                break;
+            case RfInvertErrUnsupportedModulation:
+                snprintf(
+                    ctx->error_msg,
+                    sizeof(ctx->error_msg),
+                    "NRF24 needs ext module driver (no SDK HAL)");
                 break;
             case RfInvertErrHardware:
                 snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Hardware TX error");
@@ -426,6 +441,13 @@ static void auto_test_build_ui(RfAnalyzerApp* app) {
 
     if(!ctx) return;
 
+    // widget_reset() clears button elements too, so re-register them on
+    // every rebuild (the timer calls this ~10 Hz).
+    widget_add_button_element(w, GuiButtonTypeRight, "OK", auto_test_ok_cb, ctx);
+    widget_add_button_element(w, GuiButtonTypeLeft, "Back", auto_test_back_cb, ctx);
+
+    uint32_t now = furi_get_tick();
+
     // Header with prominent AUTO TX indicator
     if(ctx->state == AutoStateTransmitting) {
         widget_add_string_element(w, 64, 8, AlignCenter, AlignBottom, FontPrimary, ">>> AUTO TX <<<");
@@ -455,14 +477,18 @@ static void auto_test_build_ui(RfAnalyzerApp* app) {
     widget_add_string_element(w, 2, 42, AlignLeft, AlignBottom, FontSecondary, line);
 
     // Status details based on state
-    // Show warning when all restrictions are removed
-    if(ctx->app->auto_test_config.remove_all_restrictions) {
-        widget_add_string_element(w, 2, 52, AlignLeft, AlignBottom, FontSecondary, "!!! ALL RESTRICTIONS REMOVED !!!");
-        widget_add_string_element(w, 2, 60, AlignLeft, AlignBottom, FontSecondary, "UNSAFE - For authorized lab use only");
-    } else {
-        widget_add_string_element(w, 2, 52, AlignLeft, AlignBottom, FontSecondary, "Press OK to start");
-        widget_add_string_element(w, 2, 60, AlignLeft, AlignBottom, FontSecondary, "Back: Exit");
-    }
+    switch(ctx->state) {
+    case AutoStateIdle:
+        if(ctx->app->auto_test_config.remove_all_restrictions) {
+            widget_add_string_element(
+                w, 2, 52, AlignLeft, AlignBottom, FontSecondary, "!!! RESTRICTIONS REMOVED !!!");
+            widget_add_string_element(
+                w, 2, 60, AlignLeft, AlignBottom, FontSecondary, "UNSAFE - authorized lab only");
+        } else {
+            widget_add_string_element(w, 2, 52, AlignLeft, AlignBottom, FontSecondary, "Press OK to start");
+            widget_add_string_element(w, 2, 60, AlignLeft, AlignBottom, FontSecondary, "Back: Exit");
+        }
+        break;
 
     case AutoStateRx:
         widget_add_string_element(w, 2, 52, AlignLeft, AlignBottom, FontSecondary, "Monitoring for signal...");
@@ -502,7 +528,6 @@ static void auto_test_build_ui(RfAnalyzerApp* app) {
     case AutoStateError:
         widget_add_string_element(w, 2, 52, AlignLeft, AlignBottom, FontSecondary, "ERROR:");
         widget_add_string_element(w, 2, 60, AlignLeft, AlignBottom, FontSecondary, ctx->error_msg);
-        widget_add_string_element(w, 2, 60, AlignLeft, AlignBottom, FontSecondary, "OK: Retry  Back: Exit");
         break;
     }
 
