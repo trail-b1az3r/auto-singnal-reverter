@@ -7,10 +7,12 @@ a logical inverse of a captured signal for authorized laboratory equipment testi
 
 > **Receive-first design.** The primary operation is receive-only. The Auto
 > Inverse Test mode is **disabled by default** and requires explicit user
-> configuration. All TX paths are gated by: single test frequency, maximum TX
-> duration, enforced cooldown, decode requirement, firmware frequency checks,
-> and a physical emergency stop (Back button). It is not a jammer — it
-> transmits a bounded, time-limited inverse waveform for receiver testing.
+> configuration. All TX paths are gated by: maximum TX duration, enforced
+> cooldown, decode requirement, firmware frequency checks, and a physical
+> emergency stop (Back button). The test sweeps the configured scan range
+> and automatically engages ANY frequency where a signal is detected. It is
+> not a jammer — it transmits a bounded, time-limited inverse waveform for
+> receiver testing.
 
 ## Features
 
@@ -20,7 +22,7 @@ a logical inverse of a captured signal for authorized laboratory equipment testi
 | **Detected Signals** | Session list of candidates: frequency, peak RSSI, decode status             |
 | **Analyze**          | Park on one frequency, run timing analysis, show protocol or "Unknown"      |
 | **Frequency List**   | Save/import candidate frequencies; step through them manually               |
-| **Auto Inverse Test**| **NEW:** Monitor test frequency, detect signal, generate & transmit inverse  |
+| **Auto Inverse Test**| **NEW:** Sweep range, auto-engage any detected frequency, TX inverse |
 | **Settings**         | Band, step size, dwell, RSSI trigger, modulation preset + Auto Test config  |
 | **About**            | Scope, safety note and firmware target                                       |
 | **TX/RX status**     | Prominent indicator — shows RX/IDLE normally, `>>> AUTO TX <<<` when TX     |
@@ -63,17 +65,17 @@ enabled:
 **Safeguards table** (see `docs/LEGAL_TEST_SETUP.md` for the full table with
 and without this mode enabled).
 
-1. **RX MONITOR** — Park on configured test frequency, capture edges
-2. **DETECTED** — Signal above RSSI threshold found
+1. **RX SWEEP** — Sweep the configured scan range for ANY signal
+2. **DETECTED** — Signal found; receiver parks on that exact frequency
 3. **ANALYZING** — Measure pulse timing, estimate bitrate
 4. **GENERATING** — Build logical inverse (levels flipped, timing preserved)
-5. **TRANSMITTING** — Send inverse waveform (bounded by TX Duration)
+5. **TRANSMITTING** — Send inverse on the detected frequency (bounded by TX Duration)
 6. **COOLDOWN** — Enforce minimum gap before next cycle
-7. **Back to RX** — Resume monitoring
+7. **Back to RX** — Resume sweeping the range
 
 **Safeguards:**
 - Disabled by default (`Auto Inverse` = OFF)
-- Single user-configured test frequency (not a range)
+- Discovery bounded to the configured scan range (Band/Step/Modulation)
 - Max TX duration: 1 ms – 10 s (hard-coded limit)
 - Cooldown: 0 – 60 s (0 only if "Remove Cooldown Limit" = YES)
 - Only transmits if signal decoded/supported (`Require Decode` = YES)

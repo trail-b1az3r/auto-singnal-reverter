@@ -73,6 +73,12 @@ static void rf_analyzer_on_signal(const RfSignal* signal, void* context) {
     notification_message(app->notifications, &sequence_blink_blue_10);
 }
 
+// Re-registers the default Scan-scene callback after a scene (e.g. Auto
+// Inverse Test) temporarily borrowed the scanner with its own callback.
+void rf_app_scanner_restore_callback(RfAnalyzerApp* app) {
+    rf_scanner_set_callback(app->scanner, rf_analyzer_on_signal, app);
+}
+
 /* ---------- view dispatcher glue ---------- */
 
 static bool rf_analyzer_custom_event_cb(void* context, uint32_t event) {

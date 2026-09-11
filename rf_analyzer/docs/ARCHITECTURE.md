@@ -100,11 +100,12 @@ in Settings and opens the *Auto Inverse Test* scene.
 ### Workflow (state machine)
 
 ```
-RX MONITOR → DETECTED → ANALYZING → GENERATING → TRANSMITTING → COOLDOWN → RX MONITOR
+RX SWEEP → DETECTED → ANALYZING → GENERATING → TRANSMITTING → COOLDOWN → RX SWEEP
 ```
 
-1. **RX MONITOR** — Park on configured `test_frequency`, run capture to stream edges.
-2. **DETECTED** — Edge count exceeds threshold (signal present above RSSI threshold).
+1. **RX SWEEP** — Sweep the configured scan range; the scanner callback hands
+   over the exact frequency of ANY detection.
+2. **DETECTED** — Sweep stopped, receiver parked on the detected frequency.
 3. **ANALYZING** — Measure pulse timing, estimate bitrate, verify modulation support.
 4. **GENERATING** — Build logical inverse waveform:
    - Modulation classified from RX preset (OOK/2-FSK)
@@ -118,7 +119,15 @@ RX MONITOR → DETECTED → ANALYZING → GENERATING → TRANSMITTING → COOLDO
    - NRF24 selection reports "needs ext module driver (no SDK HAL)" (stub)
    - Prominent `>>> AUTO TX <<<` displayed on screen
 6. **COOLDOWN** — Enforce `cooldown_ms` minimum gap (0–60 s, 0 only if override enabled)
-7. **Back to RX** — Resume monitoring on test frequency
+7. **Back to RX** — Resume sweeping the range for the next signal
+
+### Radio-lifecycle rules (crash prevention)
+
+The CC1101 may be held by exactly one engine at a time: the sweep is
+stopped before capture starts, capture is stopped before TX starts, and
+capture restarts after TX. Scene exit stops the UI timer before freeing
+scene state (the timer callback dereferences it). Violating either rule
+trips a firmware `furi_check` and crashes the device.
 
 ### Safeguards (enforced in code)
 
@@ -126,7 +135,7 @@ RX MONITOR → DETECTED → ANALYZING → GENERATING → TRANSMITTING → COOLDO
 |-----------|----------------|
 | Disabled by default | `auto_test_config.enabled = false` at startup |
 | Explicit enable | User must toggle `Auto Inverse` = ON in Settings |
-| Single test frequency | `test_frequency` setting (predefined list, not a range) |
+| Range-bounded discovery | Sweep limited to the configured scan range |
 | Max TX duration | `tx_duration_ms` clamped to `RF_AUTO_TEST_MAX_DURATION_MS` (10 s) |
 | Cooldown period | `cooldown_ms` enforced; 0 only if `remove_cooldown_limit = true` |
 | Decode requirement | `require_decode = true` by default; unsupported modulations rejected |

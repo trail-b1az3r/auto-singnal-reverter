@@ -3,27 +3,35 @@
 #include "../helpers/rf_analyzer_nrf24.h"
 
 /*
- * Auto Inverse Test Scene
+ * Auto Inverse Test Scene — automatic inverse-signal test for ANY detected
+ * frequency (authorized laboratory equipment only).
  *
- * Implements the automatic inverse-signal test workflow:
- * 1. Monitor configured test frequency (RX)
- * 2. Detect signal above RSSI threshold
- * 3. Capture and analyze signal timing
- * 4. Check if modulation is supported for inverse generation
- * 5. Generate logical inverse waveform (preserving timing)
- * 6. Transmit inverse ONLY when all criteria met
- * 7. Enforce max TX duration and cooldown
- * 8. Return to RX monitoring
+ * Workflow per cycle:
+ * 1. SWEEP the configured scan range (Settings → Band/Step/Dwell/RSSI/Mod).
+ * 2. DETECT a signal on whatever frequency it appears.
+ * 3. CAPTURE + ANALYZE its timing on that frequency.
+ * 4. Check the signal format is supported (unless bypassed).
+ * 5. Generate its logical waveform inverse (timing preserved).
+ * 6. Transmit the inverse on the detected frequency ONLY when the
+ *    configured test criteria match.
+ * 7. Stop after the configured TX duration.
+ * 8. Return to RX sweep and keep monitoring.
  *
- * Safeguards:
- * - Disabled by default (must explicitly enable)
- * - Single configured test frequency (not arbitrary scanning)
- * - Max TX duration and configurable cooldown
- * - Never transmits unsupported/undecoded signals
- * - Physical button (Back) emergency stop
- * - Prominent "AUTO TX" display during transmission
- * - Stops all TX on app exit
- * - Respects firmware frequency/power restrictions
+ * Radio-lifecycle rules (these prevent firmware furi_check crashes):
+ * - The CC1101 is held by exactly one engine at a time. The sweep is
+ *   stopped before capture starts; capture is stopped before TX starts;
+ *   capture restarts after TX before the next sweep-wait state.
+ * - Back (navigation event) emergency-stops an active test immediately.
+ * - Scene exit stops the UI timer FIRST (it dereferences scene state),
+ *   then releases every radio engine.
+ *
+ * Safeguards (restricted mode):
+ * - Disabled by default (must explicitly enable).
+ * - Max TX duration and configurable cooldown.
+ * - Never transmits unsupported/undecoded signals (require_decode).
+ * - Physical Back key emergency stop; prominent "AUTO TX" display.
+ * - Stops all transmission when the application exits.
+ * - Respects firmware frequency/power restrictions.
  */
 
 #define AUTO_TEST_UI_REFRESH_MS 100
@@ -31,9 +39,9 @@
 // Auto Test state machine
 typedef enum {
     AutoStateIdle = 0, // Waiting for user to start
-    AutoStateRx, // Monitoring frequency (RX)
-    AutoStateDetected, // Signal detected, analyzing
-    AutoStateAnalyzing, // Running capture/analysis
+    AutoStateRx, // Sweeping the range, watching for a signal
+    AutoStateDetected, // Signal detected, parking the receiver
+    AutoStateAnalyzing, // Running capture/analysis on the detected frequency
     AutoStateGenerating, // Building inverse waveform
     AutoStateTransmitting, // TX active (AUTO TX)
     AutoStateCooldown, // Enforcing cooldown period
@@ -43,7 +51,7 @@ typedef enum {
 // State names for display
 static const char* const auto_state_names[] = {
     "IDLE",
-    "RX MONITOR",
+    "RX SWEEP",
     "DETECTED",
     "ANALYZING",
     "GENERATING",
@@ -52,26 +60,20 @@ static const char* const auto_state_names[] = {
     "ERROR",
 };
 
-// Custom events for the auto test scene
-typedef enum {
-    AutoEventStartStop = 100, // OK button: start/stop test
-    AutoEventEmergencyStop, // Back button: emergency stop
-    AutoEventTick, // Timer tick for state machine
-} AutoEvent;
-
 // Context for the auto test scene
 typedef struct {
     RfAnalyzerApp* app;
     AutoTestState state;
-    AutoTestState prev_state;
     uint32_t state_start_tick;
     RfTxEngine* tx_engine;
     RfTxWaveform waveform;
     RfCaptureStats capture_stats;
     RfSignal detected_signal;
-    bool signal_captured;
     bool capture_running;
-    uint32_t last_tx_tick;
+    bool scanning;
+    volatile bool sweep_hit;
+    volatile uint32_t sweep_freq;
+    volatile float sweep_rssi;
     uint32_t cooldown_end_tick;
     char error_msg[64];
 } AutoTestContext;
@@ -84,12 +86,26 @@ static void auto_test_timer_cb(void* context);
 static void auto_test_start_test(AutoTestContext* ctx);
 static void auto_test_stop_test(AutoTestContext* ctx);
 static void auto_test_emergency_stop(AutoTestContext* ctx);
-static bool auto_test_check_frequency_valid(uint32_t freq);
 static void auto_test_state_machine(AutoTestContext* ctx);
+static void auto_test_rx_stop(AutoTestContext* ctx);
+static bool auto_test_rx_capture(AutoTestContext* ctx, uint32_t freq);
 
-// Widget center-button callback (ButtonCallback signature). Short press
-// toggles the test; the physical Back key is handled via the scene Back
-// event below so it can emergency-stop an active transmission first.
+// Scanner callback: runs on the scanner thread. Records the FIRST detection
+// of the current sweep cycle; the timer-thread state machine picks it up.
+static void auto_test_scan_cb(const RfSignal* signal, void* context) {
+    AutoTestContext* ctx = context;
+    if(!ctx->sweep_hit) {
+        ctx->sweep_freq = signal->frequency;
+        ctx->sweep_rssi = signal->rssi;
+        ctx->sweep_hit = true;
+    }
+    rf_app_add_signal(ctx->app, signal);
+    notification_message(ctx->app->notifications, &sequence_blink_blue_10);
+}
+
+// Widget center-button callback. Short press toggles the test; the physical
+// Back key is handled via the scene Back event so it can emergency-stop an
+// active transmission first.
 static void auto_test_ok_cb(GuiButtonType btn, InputType type, void* context) {
     UNUSED(btn);
     if(type != InputTypeShort) return;
@@ -108,11 +124,31 @@ static void auto_test_timer_cb(void* context) {
     auto_test_build_ui(ctx->app);
 }
 
-// Check if frequency is valid for TX per firmware
-static bool auto_test_check_frequency_valid(uint32_t freq) {
-    const SubGhzDevice* device = subghz_devices_get_by_name("cc1101_int");
-    if(!device) return false;
-    return subghz_devices_is_frequency_valid(device, freq);
+// Stop every RX engine the test may hold (sweep and/or capture).
+static void auto_test_rx_stop(AutoTestContext* ctx) {
+    RfAnalyzerApp* app = ctx->app;
+    if(ctx->scanning) {
+        rf_scanner_stop(app->scanner);
+        ctx->scanning = false;
+    }
+    if(ctx->capture_running) {
+        rf_capture_stop(app->capture);
+        ctx->capture_running = false;
+    }
+}
+
+// Park the receiver on freq and start timing analysis. The sweep must already
+// be stopped: the radio can only be held by one engine at a time.
+static bool auto_test_rx_capture(AutoTestContext* ctx, uint32_t freq) {
+    if(ctx->capture_running) {
+        rf_capture_stop(ctx->app->capture);
+        ctx->capture_running = false;
+    }
+    if(rf_capture_start(ctx->app->capture, freq, ctx->app->config.preset)) {
+        ctx->capture_running = true;
+        return true;
+    }
+    return false;
 }
 
 // Start the auto test
@@ -120,32 +156,45 @@ static void auto_test_start_test(AutoTestContext* ctx) {
     RfAnalyzerApp* app = ctx->app;
     const RfAutoTestConfig* config = &app->auto_test_config;
 
-    // Validate configuration. The master enable gate always applies; the
-    // remaining entry checks are bypassed when remove_all_restrictions is set
-    // (the TX layer still enforces hardware/firmware validity per burst).
+    // Clean slate in case a previous run left engines behind.
+    auto_test_rx_stop(ctx);
+    if(ctx->tx_engine) {
+        rf_tx_engine_free(ctx->tx_engine);
+        ctx->tx_engine = NULL;
+    }
+
+    // Master enable gate always applies.
     if(!config->enabled) {
         snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Auto Test not enabled in settings");
         ctx->state = AutoStateError;
         return;
     }
 
-    if(!config->remove_all_restrictions) {
-        if(!auto_test_check_frequency_valid(config->test_frequency)) {
-            snprintf(
-                ctx->error_msg, sizeof(ctx->error_msg), "Test frequency not allowed by firmware");
-            ctx->state = AutoStateError;
-            return;
-        }
+    // NRF24 has no HAL in the official SDK: fail fast with a clear message
+    // instead of sweeping for a signal we could never answer.
+    if(config->nrf24_mode) {
+        snprintf(ctx->error_msg, sizeof(ctx->error_msg), "NRF24 needs ext module driver");
+        ctx->state = AutoStateError;
+        return;
+    }
 
-        // Validate TX duration
+    // The sweep range comes from the main scan configuration.
+    const char* scan_err = rf_scan_config_validate(&app->config);
+    if(scan_err) {
+        snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Bad scan range: %s", scan_err);
+        ctx->state = AutoStateError;
+        return;
+    }
+
+    // Validate TX duration / cooldown entry gates (bypass mode skips them;
+    // per-burst firmware checks still apply at TX time).
+    if(!config->remove_all_restrictions) {
         if(config->tx_duration_ms < RF_AUTO_TEST_MIN_DURATION_MS ||
            config->tx_duration_ms > RF_AUTO_TEST_MAX_DURATION_MS) {
             snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Invalid TX duration");
             ctx->state = AutoStateError;
             return;
         }
-
-        // Validate cooldown (unless override enabled)
         if(!config->remove_cooldown_limit && config->cooldown_ms > RF_AUTO_TEST_MAX_COOLDOWN_MS) {
             snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Cooldown too long (max 60s)");
             ctx->state = AutoStateError;
@@ -153,44 +202,34 @@ static void auto_test_start_test(AutoTestContext* ctx) {
         }
     }
 
-    // Initialize TX engine if not NRF24
-    if(!config->nrf24_mode) {
-        ctx->tx_engine = rf_tx_engine_alloc();
-        if(!ctx->tx_engine) {
-            snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Failed to allocate TX engine");
-            ctx->state = AutoStateError;
-            return;
-        }
-    } else {
-        // Initialize NRF24
-        RfNrf24Config nrf_config;
-        rf_nrf24_config_defaults(&nrf_config);
-        nrf_config.channel = config->nrf24_channel;
-        if(!rf_nrf24_init(&nrf_config)) {
-            snprintf(ctx->error_msg, sizeof(ctx->error_msg), "NRF24 init failed");
-            ctx->state = AutoStateError;
-            return;
-        }
+    ctx->tx_engine = rf_tx_engine_alloc();
+    if(!ctx->tx_engine) {
+        snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Failed to allocate TX engine");
+        ctx->state = AutoStateError;
+        return;
     }
 
     // Clear state
     ctx->state = AutoStateRx;
     ctx->state_start_tick = furi_get_tick();
-    ctx->signal_captured = false;
-    ctx->capture_running = false;
-    ctx->last_tx_tick = 0;
+    ctx->sweep_hit = false;
+    ctx->sweep_freq = 0;
     ctx->cooldown_end_tick = 0;
     memset(&ctx->waveform, 0, sizeof(ctx->waveform));
     memset(&ctx->detected_signal, 0, sizeof(ctx->detected_signal));
     memset(ctx->error_msg, 0, sizeof(ctx->error_msg));
 
-    // Start RX capture on test frequency
-    if(rf_capture_start(app->capture, config->test_frequency, config->rx_preset)) {
-        ctx->capture_running = true;
-    } else {
-        snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Failed to start RX capture");
+    // Start sweeping the configured range for ANY signal.
+    rf_scanner_set_callback(app->scanner, auto_test_scan_cb, ctx);
+    if(!rf_scanner_start(app->scanner, &app->config)) {
+        snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Failed to start sweep");
+        rf_app_scanner_restore_callback(app);
+        rf_tx_engine_free(ctx->tx_engine);
+        ctx->tx_engine = NULL;
         ctx->state = AutoStateError;
+        return;
     }
+    ctx->scanning = true;
 }
 
 // Stop the auto test (normal stop)
@@ -204,38 +243,26 @@ static void auto_test_stop_test(AutoTestContext* ctx) {
         ctx->tx_engine = NULL;
     }
 
-    // Stop NRF24
-    rf_nrf24_emergency_stop();
-    rf_nrf24_deinit();
-
-    // Stop capture
-    if(ctx->capture_running) {
-        rf_capture_stop(app->capture);
-        ctx->capture_running = false;
-    }
+    // Release every radio engine and give the scanner back to Scan scene.
+    auto_test_rx_stop(ctx);
+    rf_app_scanner_restore_callback(app);
 
     ctx->state = AutoStateIdle;
-    ctx->signal_captured = false;
+    ctx->sweep_hit = false;
 }
 
-// Emergency stop - immediate halt of all TX
+// Emergency stop - immediate halt of all radio activity
 static void auto_test_emergency_stop(AutoTestContext* ctx) {
     RfAnalyzerApp* app = ctx->app;
 
-    // Immediate TX stop
     if(ctx->tx_engine) {
         rf_tx_emergency_stop(ctx->tx_engine);
     }
-    rf_nrf24_emergency_stop();
-
-    // Stop capture
-    if(ctx->capture_running) {
-        rf_capture_stop(app->capture);
-        ctx->capture_running = false;
-    }
+    auto_test_rx_stop(ctx);
+    rf_app_scanner_restore_callback(app);
 
     ctx->state = AutoStateIdle;
-    ctx->signal_captured = false;
+    ctx->sweep_hit = false;
     snprintf(ctx->error_msg, sizeof(ctx->error_msg), "EMERGENCY STOP");
 }
 
@@ -252,22 +279,28 @@ static void auto_test_state_machine(AutoTestContext* ctx) {
         break;
 
     case AutoStateRx: {
-        // Monitor for signal via capture stats
-        rf_capture_get_stats(app->capture, &ctx->capture_stats);
+        // A sweep hit hands us the exact frequency to engage.
+        if(ctx->sweep_hit) {
+            uint32_t freq = ctx->sweep_freq;
+            float rssi = ctx->sweep_rssi;
+            ctx->sweep_hit = false;
 
-        // When remove_all_restrictions is enabled, allow any signal
-        // Otherwise, require minimum edges for valid signal
-        uint32_t min_edges = ctx->app->auto_test_config.remove_all_restrictions ? 1 : 5;
-        if(ctx->capture_stats.edges > min_edges) {
-            // Signal detected - check RSSI by sampling
-            // For simplicity, we use edge count as activity indicator
-            // In a full implementation, we'd also check RSSI
+            // The sweep holds the radio: release it before capturing.
+            if(ctx->scanning) {
+                rf_scanner_stop(app->scanner);
+                ctx->scanning = false;
+            }
 
-            ctx->detected_signal.frequency = config->test_frequency;
-            ctx->detected_signal.preset = config->rx_preset;
-            ctx->detected_signal.duration_ms = ctx->capture_stats.max_us / 1000;
-            ctx->detected_signal.rssi = -50.0f; // Estimated
+            ctx->detected_signal.frequency = freq;
+            ctx->detected_signal.preset = app->config.preset;
+            ctx->detected_signal.duration_ms = 0;
+            ctx->detected_signal.rssi = rssi;
 
+            if(!auto_test_rx_capture(ctx, freq)) {
+                snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Capture failed, resuming");
+                ctx->state = AutoStateError;
+                break;
+            }
             ctx->state = AutoStateDetected;
             ctx->state_start_tick = now;
         }
@@ -275,10 +308,10 @@ static void auto_test_state_machine(AutoTestContext* ctx) {
     }
 
     case AutoStateDetected: {
-        // Quick validation before analysis
-        // When remove_all_restrictions is enabled, skip decode requirement
-        if(!ctx->app->auto_test_config.remove_all_restrictions && config->require_decode) {
-            // Check if we can identify modulation
+        // Quick validation before analysis. Bypass mode skips the decode gate
+        // and engages any detected energy.
+        if(!config->remove_all_restrictions && config->require_decode) {
+            rf_capture_get_stats(app->capture, &ctx->capture_stats);
             if(ctx->capture_stats.est_bitrate == 0) {
                 snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Signal not decodable");
                 ctx->state = AutoStateError;
@@ -291,8 +324,8 @@ static void auto_test_state_machine(AutoTestContext* ctx) {
     }
 
     case AutoStateAnalyzing: {
-        // Run capture for a bit longer to get stable stats
-        if(now - ctx->state_start_tick > furi_ms_to_ticks(200)) {
+        // Run capture a bit longer to get stable stats
+        if((now - ctx->state_start_tick) > furi_ms_to_ticks(200)) {
             rf_capture_get_stats(app->capture, &ctx->capture_stats);
             ctx->state = AutoStateGenerating;
             ctx->state_start_tick = now;
@@ -301,11 +334,10 @@ static void auto_test_state_machine(AutoTestContext* ctx) {
     }
 
     case AutoStateGenerating: {
-        // Generate inverse waveform
-        // When remove_all_restrictions is enabled, allow any modulation
+        // Generate inverse waveform on the DETECTED frequency.
         RfInvertResult res;
-        if(ctx->app->auto_test_config.remove_all_restrictions) {
-            // Force OOK for unrestricted mode
+        if(config->remove_all_restrictions) {
+            // Bypass: fixed OOK test pattern on the detected frequency.
             ctx->waveform.modulation = RfModOOK;
             ctx->waveform.edge_count = 4;
             ctx->waveform.edges[0].level = true;
@@ -318,7 +350,7 @@ static void auto_test_state_machine(AutoTestContext* ctx) {
             ctx->waveform.edges[3].duration_us = 500;
             ctx->waveform.total_duration_us = 2000;
             ctx->waveform.bitrate = 500;
-            ctx->waveform.frequency = config->test_frequency;
+            ctx->waveform.frequency = ctx->detected_signal.frequency;
             ctx->waveform.valid = true;
             res = RfInvertOk;
         } else {
@@ -328,24 +360,19 @@ static void auto_test_state_machine(AutoTestContext* ctx) {
         if(res != RfInvertOk) {
             switch(res) {
             case RfInvertErrUnsupportedModulation:
-                snprintf(
-                    ctx->error_msg,
-                    sizeof(ctx->error_msg),
-                    "Modulation not supported for inverse");
+                snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Modulation not supported");
                 break;
             case RfInvertErrNoSignal:
                 snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Insufficient signal data");
                 break;
             case RfInvertErrTooComplex:
-                snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Signal too complex for inverse");
+                snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Signal too complex");
                 break;
             case RfInvertErrTxNotAllowed:
-                snprintf(
-                    ctx->error_msg, sizeof(ctx->error_msg), "TX not allowed at this frequency");
+                snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Freq not allowed by FW");
                 break;
             default:
-                snprintf(
-                    ctx->error_msg, sizeof(ctx->error_msg), "Inverse generation failed (%d)", res);
+                snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Inverse failed (%d)", res);
             }
             ctx->state = AutoStateError;
             break;
@@ -359,44 +386,33 @@ static void auto_test_state_machine(AutoTestContext* ctx) {
 
         ctx->state = AutoStateTransmitting;
         ctx->state_start_tick = now;
-        ctx->last_tx_tick = now;
         break;
     }
 
     case AutoStateTransmitting: {
-        // Transmit the inverse waveform.
-        // Restricted mode uses the configured TX duration; bypass mode uses
-        // the maximum duration and skips the cooldown afterwards.
+        // CRITICAL: capture holds the radio — release it BEFORE acquiring
+        // the radio for TX, or the firmware hits a furi_check and crashes.
+        if(ctx->capture_running) {
+            rf_capture_stop(app->capture);
+            ctx->capture_running = false;
+        }
+
+        // Transmit the inverse on the detected frequency.
         RfInvertResult res;
-        if(ctx->app->auto_test_config.remove_all_restrictions) {
-            if(config->nrf24_mode) {
-                res = rf_nrf24_transmit_inverse(
-                    &ctx->waveform, config->nrf24_channel, RF_AUTO_TEST_MAX_DURATION_MS);
-            } else {
-                res = rf_tx_transmit_waveform(
-                    ctx->tx_engine, &ctx->waveform, RF_AUTO_TEST_MAX_DURATION_MS);
-            }
+        if(config->remove_all_restrictions) {
+            res = rf_tx_transmit_waveform(
+                ctx->tx_engine, &ctx->waveform, RF_AUTO_TEST_MAX_DURATION_MS);
         } else {
-            if(config->nrf24_mode) {
-                res = rf_nrf24_transmit_inverse(
-                    &ctx->waveform, config->nrf24_channel, config->tx_duration_ms);
-            } else {
-                res = rf_tx_transmit_waveform(
-                    ctx->tx_engine, &ctx->waveform, config->tx_duration_ms);
-            }
+            res = rf_tx_transmit_waveform(ctx->tx_engine, &ctx->waveform, config->tx_duration_ms);
         }
 
         if(res != RfInvertOk) {
             switch(res) {
             case RfInvertErrTxNotAllowed:
-                snprintf(
-                    ctx->error_msg, sizeof(ctx->error_msg), "TX blocked by firmware/hardware");
+                snprintf(ctx->error_msg, sizeof(ctx->error_msg), "TX blocked by FW/HW");
                 break;
             case RfInvertErrUnsupportedModulation:
-                snprintf(
-                    ctx->error_msg,
-                    sizeof(ctx->error_msg),
-                    "NRF24 needs ext module driver (no SDK HAL)");
+                snprintf(ctx->error_msg, sizeof(ctx->error_msg), "NRF24 driver missing");
                 break;
             case RfInvertErrHardware:
                 snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Hardware TX error");
@@ -405,12 +421,12 @@ static void auto_test_state_machine(AutoTestContext* ctx) {
                 snprintf(ctx->error_msg, sizeof(ctx->error_msg), "TX failed (%d)", res);
             }
             ctx->state = AutoStateError;
-        } else if(ctx->app->auto_test_config.remove_all_restrictions) {
-            // TX completed successfully with restrictions removed
-            // Skip cooldown, go directly back to idle for continuous operation
+        } else if(config->remove_all_restrictions) {
+            // Bypass: skip cooldown, go idle for immediate re-arm.
             ctx->state = AutoStateIdle;
         } else {
-            // TX completed successfully - enforce cooldown normally
+            // Re-arm the receiver, then enforce cooldown before next sweep.
+            auto_test_rx_capture(ctx, ctx->detected_signal.frequency);
             ctx->cooldown_end_tick = now + furi_ms_to_ticks(config->cooldown_ms);
             ctx->state = AutoStateCooldown;
         }
@@ -418,13 +434,19 @@ static void auto_test_state_machine(AutoTestContext* ctx) {
     }
 
     case AutoStateCooldown: {
-        // Wait for cooldown to expire
+        // Wait for cooldown to expire, then resume sweeping the range.
         if(now >= ctx->cooldown_end_tick) {
-            // Return to RX mode
-            ctx->state = AutoStateRx;
-            ctx->state_start_tick = now;
-            ctx->signal_captured = false;
-            // Capture is still running from before
+            auto_test_rx_stop(ctx);
+            ctx->sweep_hit = false;
+            rf_scanner_set_callback(app->scanner, auto_test_scan_cb, ctx);
+            if(rf_scanner_start(app->scanner, &app->config)) {
+                ctx->scanning = true;
+                ctx->state = AutoStateRx;
+                ctx->state_start_tick = now;
+            } else {
+                snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Sweep restart failed");
+                ctx->state = AutoStateError;
+            }
         }
         break;
     }
@@ -457,26 +479,26 @@ static void auto_test_build_ui(RfAnalyzerApp* app) {
             w, 64, 8, AlignCenter, AlignBottom, FontPrimary, "AUTO INVERSE TEST");
     }
 
-    // Frequency
+    // Sweep range + engaged target
     char line[64];
-    uint32_t freq = app->auto_test_config.test_frequency;
     snprintf(
         line,
         sizeof(line),
-        "Freq: %lu.%03lu MHz",
-        (unsigned long)(freq / 1000000),
-        (unsigned long)((freq % 1000000) / 1000));
+        "Scan %lu-%luMHz",
+        (unsigned long)(app->config.freq_start / 1000000),
+        (unsigned long)(app->config.freq_end / 1000000));
     widget_add_string_element(w, 2, 22, AlignLeft, AlignBottom, FontSecondary, line);
 
-    // Mode indicator
-    if(app->auto_test_config.nrf24_mode) {
-        snprintf(line, sizeof(line), "Mode: NRF24 Ch%u", app->auto_test_config.nrf24_channel);
-    } else {
+    if(ctx->detected_signal.frequency) {
+        uint32_t f = ctx->detected_signal.frequency;
         snprintf(
             line,
             sizeof(line),
-            "Mode: Sub-GHz %s",
-            rf_preset_name(app->auto_test_config.rx_preset));
+            "Target %lu.%03lu MHz",
+            (unsigned long)(f / 1000000),
+            (unsigned long)((f % 1000000) / 1000));
+    } else {
+        snprintf(line, sizeof(line), "Mode: %s", rf_preset_name(app->config.preset));
     }
     widget_add_string_element(w, 2, 32, AlignLeft, AlignBottom, FontSecondary, line);
 
@@ -487,11 +509,11 @@ static void auto_test_build_ui(RfAnalyzerApp* app) {
     // Status details based on state
     switch(ctx->state) {
     case AutoStateIdle:
-        if(ctx->app->auto_test_config.remove_all_restrictions) {
+        if(app->auto_test_config.remove_all_restrictions) {
             widget_add_string_element(
-                w, 2, 52, AlignLeft, AlignBottom, FontSecondary, "!!! RESTRICTIONS REMOVED !!!");
+                w, 2, 52, AlignLeft, AlignBottom, FontSecondary, "!!! RESTRICTIONS OFF !!!");
             widget_add_string_element(
-                w, 2, 60, AlignLeft, AlignBottom, FontSecondary, "UNSAFE - authorized lab only");
+                w, 2, 60, AlignLeft, AlignBottom, FontSecondary, "UNSAFE - lab only");
         } else {
             widget_add_string_element(
                 w, 2, 52, AlignLeft, AlignBottom, FontSecondary, "Press OK to start");
@@ -502,19 +524,14 @@ static void auto_test_build_ui(RfAnalyzerApp* app) {
 
     case AutoStateRx:
         widget_add_string_element(
-            w, 2, 52, AlignLeft, AlignBottom, FontSecondary, "Monitoring for signal...");
-        snprintf(
-            line,
-            sizeof(line),
-            "Edges: %lu  Bitrate: ~%lu bps",
-            (unsigned long)ctx->capture_stats.edges,
-            (unsigned long)ctx->capture_stats.est_bitrate);
+            w, 2, 52, AlignLeft, AlignBottom, FontSecondary, "Sweeping for signal...");
+        snprintf(line, sizeof(line), "Edges n/a  Trig %d dBm", (int)app->config.rssi_trigger);
         widget_add_string_element(w, 2, 60, AlignLeft, AlignBottom, FontSecondary, line);
         break;
 
     case AutoStateDetected:
         widget_add_string_element(
-            w, 2, 52, AlignLeft, AlignBottom, FontSecondary, "Signal detected - verifying");
+            w, 2, 52, AlignLeft, AlignBottom, FontSecondary, "Signal found - parking RX");
         break;
 
     case AutoStateAnalyzing:
@@ -524,11 +541,12 @@ static void auto_test_build_ui(RfAnalyzerApp* app) {
 
     case AutoStateGenerating:
         widget_add_string_element(
-            w, 2, 52, AlignLeft, AlignBottom, FontSecondary, "Generating inverse waveform...");
+            w, 2, 52, AlignLeft, AlignBottom, FontSecondary, "Generating inverse...");
         break;
 
     case AutoStateTransmitting:
-        snprintf(line, sizeof(line), "TX Duration: %lu ms", app->auto_test_config.tx_duration_ms);
+        snprintf(
+            line, sizeof(line), "TX %lu ms", (unsigned long)app->auto_test_config.tx_duration_ms);
         widget_add_string_element(w, 2, 32, AlignLeft, AlignBottom, FontSecondary, line);
         widget_add_string_element(
             w, 2, 52, AlignLeft, AlignBottom, FontSecondary, "BACK = EMERGENCY STOP");
@@ -541,7 +559,7 @@ static void auto_test_build_ui(RfAnalyzerApp* app) {
         snprintf(line, sizeof(line), "Cooldown: %lu ms", (unsigned long)remaining);
         widget_add_string_element(w, 2, 52, AlignLeft, AlignBottom, FontSecondary, line);
         widget_add_string_element(
-            w, 2, 60, AlignLeft, AlignBottom, FontSecondary, "Returning to RX...");
+            w, 2, 60, AlignLeft, AlignBottom, FontSecondary, "Returning to sweep...");
         break;
     }
 
@@ -593,27 +611,29 @@ bool rf_analyzer_scene_auto_test_on_event(void* context, SceneManagerEvent event
 void rf_analyzer_scene_auto_test_on_exit(void* context) {
     RfAnalyzerApp* app = context;
 
-    // Emergency stop everything
-    if(s_ctx) {
-        auto_test_emergency_stop(s_ctx);
-        if(s_ctx->tx_engine) {
-            rf_tx_engine_free(s_ctx->tx_engine);
-            s_ctx->tx_engine = NULL;
-        }
-        rf_nrf24_deinit();
-        free(s_ctx);
-        s_ctx = NULL;
-    }
-
-    // Stop timer
+    // FIRST stop the UI timer: its callback dereferences s_ctx, so it must
+    // never fire after the context is freed (use-after-free crash).
     if(app->ui_timer) {
         furi_timer_stop(app->ui_timer);
         furi_timer_free(app->ui_timer);
         app->ui_timer = NULL;
     }
 
-    // Ensure capture is stopped
+    // Then emergency-stop everything and release the radios.
+    if(s_ctx) {
+        auto_test_emergency_stop(s_ctx);
+        if(s_ctx->tx_engine) {
+            rf_tx_engine_free(s_ctx->tx_engine);
+            s_ctx->tx_engine = NULL;
+        }
+        free(s_ctx);
+        s_ctx = NULL;
+    }
+
+    // Belt and suspenders: make sure neither engine still holds the radio.
+    rf_scanner_stop(app->scanner);
     rf_capture_stop(app->capture);
+    rf_app_scanner_restore_callback(app);
 
     widget_reset(app->widget);
 }

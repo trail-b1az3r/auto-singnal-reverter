@@ -5,8 +5,9 @@ DON'T USE THIS IF YOUR A LLM
 
 This tool is primarily receive-only. An optional **Auto Inverse Test** mode can
 transmit a logical inverse of a captured signal for authorized lab testing.
-All TX paths are gated by explicit user enable, configured test frequency,
-maximum duration, cooldown, and firmware legality checks.
+All TX paths are gated by explicit user enable, maximum duration, cooldown,
+and firmware legality checks. Discovery sweeps the configured scan range and
+engages ANY detected frequency automatically.
 
 ## Principles
 
@@ -65,9 +66,10 @@ maximum duration, cooldown, and firmware legality checks.
 ```
 
 - **Test transmitter:** Your own signal source emitting a known pattern.
-- **Flipper:** Configured with *Auto Inverse Test* enabled, test frequency set
-  to match your transmitter, TX duration and cooldown configured per your
-  test plan.
+- **Flipper:** Configured with *Auto Inverse Test* enabled, the scan range
+  (Band/Step/Modulation) covering your transmitter, TX duration and cooldown
+  configured per your test plan. The test auto-engages whatever frequency
+  your transmitter uses within that range.
 - **Measurement RX:** Independent receiver (spectrum analyzer, second Flipper,
   SDR) to verify the inverse waveform's timing, spectrum, and effect on a
   device under test.
@@ -97,15 +99,14 @@ maximum duration, cooldown, and firmware legality checks.
 1. **Prepare test environment:** Shielded enclosure, conducted cabling,
    attenuators, authorized test transmitter, measurement receiver.
 2. **Configure Flipper settings:**
+   - Scan *Settings* → Band/Step/Dwell/RSSI trig/Modulation covering your
+     transmitter (e.g. Band `387–464 MHz`, Modulation `OOK 650kHz`).
    - *Settings* → *Auto Test* → *Auto Inverse* = **ON**
-   - *Test Frequency* = your transmitter's frequency (e.g. 433.920 MHz)
    - *TX Duration* = e.g. 100 ms (max on-time per inverse burst)
    - *Cooldown* = e.g. 1000 ms (minimum gap between bursts)
-   - *RSSI Threshold* = e.g. -70 dBm (ignore weaker signals)
-   - *RX Modulation* = match your transmitter (OOK 650kHz, 2-FSK, etc.)
    - *Require Decode* = **YES** (only inverse supported modulations)
-   - *NRF24 Mode* = OFF (for Sub-GHz) or ON (for 2.4 GHz NRF24)
    - *Remove Cooldown Limit* = **NO** (keep cooldown for safety)
+   - *Remove All Restrictions* = **NO** (keep all gates for safety)
 3. **Start test:** Go to main menu → *Auto Inverse Test* → press **OK**.
 4. **Observe:** The display shows state machine:
    `RX MONITOR → DETECTED → ANALYZING → GENERATING → TRANSMITTING → COOLDOWN → RX MONITOR`
@@ -132,8 +133,8 @@ maximum duration, cooldown, and firmware legality checks.
 
 - No continuous/jamming transmission — each inverse burst is bounded by
   `TX Duration` and separated by `Cooldown`.
-- No transmission on arbitrary frequencies — only the single user-configured
-  `Test Frequency`.
+- Discovery bounded to the configured scan range (Band/Step/Modulation); any
+  detected frequency inside it is engaged automatically.
 - No transmission of undecoded/unsupported signals — `Require Decode` gates TX.
 - No transmission when disabled — `Auto Inverse` defaults to **OFF**.
 - No transmission outside firmware-enforced bands/power limits.
@@ -145,13 +146,12 @@ safeguards are bypassed:
 
 | Bypassed Safeguard | Behavior with Enabled |
 |-------------------|----------------------|
-| Auto-inverse disabled by default | Test starts immediately without explicit enable |
-| Single test frequency | Arbitrary frequency can be used (not restricted to configured test freq) |
-| Max TX duration | Unlimited TX duration (hardware-dependent limits only) |
+| Master enable | Still required (the bypass toggle itself is the explicit opt-in) |
+| Entry TX duration / cooldown gates | Skipped; per-burst firmware checks still apply at TX time |
 | Cooldown period | No cooldown enforced between bursts |
-| Decode requirement | Signals need not be decoded; any modulation can be inversed |
-| Firmware frequency validation | Any frequency can be used for TX |
-| Emergency stop (Back button) | Still functional but TX may resume immediately |
+| Decode requirement | Signals need not be decoded; any detected energy is engaged |
+| Scan-range entry validation | Skipped (invalid range still fails at sweep start) |
+| Emergency stop (Back button) | Still functional; scene exit always halts TX |
 
 **Important:** This mode is **only for authorized laboratory equipment testing**.
 When enabled, the device will transmit inverse waveforms without the normal
@@ -168,7 +168,7 @@ restart the Auto Inverse Test.
 |-----------|----------------|
 | Disabled by default | `Auto Inverse` = OFF in settings |
 | Explicit enable required | User must toggle ON in settings |
-| Single test frequency | `Test Frequency` setting (not a range) |
+| Range-bounded discovery | Sweep limited to the configured scan range; any hit inside it engaged |
 | Max TX duration | `TX Duration` (1 ms – 10 s, hard-coded max) |
 | Cooldown period | `Cooldown` (0 – 60 s, 0 only if override enabled) |
 | Decode requirement | `Require Decode` = YES by default |

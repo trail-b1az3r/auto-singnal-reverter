@@ -111,14 +111,15 @@ typedef struct {
     bool valid; // true if waveform was successfully generated
 } RfTxWaveform;
 
-// Auto Inverse Test configuration
+// Auto Inverse Test configuration.
+//
+// Discovery is range-driven: the test sweeps the main scan configuration
+// (Settings → Band/Step/Dwell/RSSI trig/Modulation) and automatically
+// engages ANY frequency where a signal is detected.
 typedef struct {
     bool enabled; // master enable (disabled by default)
-    uint32_t test_frequency; // Hz — single frequency to monitor/TX (not a range)
     uint32_t tx_duration_ms; // max TX on-time per trigger
     uint32_t cooldown_ms; // minimum gap between TX bursts (0 = no limit)
-    float rssi_threshold; // dBm — only act on signals above this
-    RfPreset rx_preset; // modulation preset for RX analysis
     bool require_decode; // only TX if protocol was decoded
     bool nrf24_mode; // use NRF24 radio instead of Sub-GHz
     uint8_t nrf24_channel; // NRF24 channel (0-125)
@@ -129,11 +130,8 @@ typedef struct {
 // Default configuration for Auto Inverse Test
 static inline void rf_auto_test_config_defaults(RfAutoTestConfig* config) {
     config->enabled = false;
-    config->test_frequency = 433920000; // 433.92 MHz
     config->tx_duration_ms = 100;
     config->cooldown_ms = 1000;
-    config->rssi_threshold = -70.0f;
-    config->rx_preset = RfPresetOok650;
     config->require_decode = true;
     config->nrf24_mode = false;
     config->nrf24_channel = 2; // Common NRF24 default

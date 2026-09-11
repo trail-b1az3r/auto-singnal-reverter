@@ -5,8 +5,10 @@
  * Settings scene.
  *
  * Edits the scan configuration and Auto Inverse Test configuration.
- * Auto Test settings include: enable, test frequency, TX duration, cooldown,
- * RSSI threshold, modulation, decode requirement, NRF24 mode, and cooldown override.
+ * Scan settings (band/step/dwell/RSSI/modulation) also drive Auto Inverse
+ * Test discovery: the test sweeps that range and engages any detected
+ * frequency. Auto Test settings: enable, TX duration, cooldown, decode
+ * requirement, NRF24 mode/channel, and restriction overrides.
  */
 
 static const uint32_t step_values[] = {25000, 50000, 100000, 250000, 500000};
@@ -24,10 +26,6 @@ static const char* const tx_duration_labels[] =
 static const uint32_t cooldown_values[] = {0, 100, 250, 500, 1000, 2000, 5000, 10000, 30000, 60000};
 static const char* const cooldown_labels[] =
     {"OFF", "100ms", "250ms", "500ms", "1s", "2s", "5s", "10s", "30s", "60s"};
-
-static const uint32_t test_freq_values[] = {315000000, 433920000, 868300000, 915000000};
-static const char* const test_freq_labels[] =
-    {"315.000 MHz", "433.920 MHz", "868.300 MHz", "915.000 MHz"};
 
 static const uint8_t nrf24_channels[] = {0, 1, 2, 10, 20, 40, 60, 80, 100, 125};
 static const char* const nrf24_channel_labels[] =
@@ -83,13 +81,6 @@ static void auto_test_enabled_changed(VariableItem* item) {
     app->auto_test_config.enabled = idx;
 }
 
-static void auto_test_freq_changed(VariableItem* item) {
-    RfAnalyzerApp* app = variable_item_get_context(item);
-    uint8_t idx = variable_item_get_current_value_index(item);
-    variable_item_set_current_value_text(item, test_freq_labels[idx]);
-    app->auto_test_config.test_frequency = test_freq_values[idx];
-}
-
 static void auto_test_tx_duration_changed(VariableItem* item) {
     RfAnalyzerApp* app = variable_item_get_context(item);
     uint8_t idx = variable_item_get_current_value_index(item);
@@ -102,20 +93,6 @@ static void auto_test_cooldown_changed(VariableItem* item) {
     uint8_t idx = variable_item_get_current_value_index(item);
     variable_item_set_current_value_text(item, cooldown_labels[idx]);
     app->auto_test_config.cooldown_ms = cooldown_values[idx];
-}
-
-static void auto_test_rssi_changed(VariableItem* item) {
-    RfAnalyzerApp* app = variable_item_get_context(item);
-    uint8_t idx = variable_item_get_current_value_index(item);
-    variable_item_set_current_value_text(item, rssi_labels[idx]);
-    app->auto_test_config.rssi_threshold = rssi_values[idx];
-}
-
-static void auto_test_rx_preset_changed(VariableItem* item) {
-    RfAnalyzerApp* app = variable_item_get_context(item);
-    uint8_t idx = variable_item_get_current_value_index(item);
-    variable_item_set_current_value_text(item, rf_preset_name((RfPreset)idx));
-    app->auto_test_config.rx_preset = (RfPreset)idx;
 }
 
 static void auto_test_require_decode_changed(VariableItem* item) {
@@ -167,14 +144,6 @@ static uint8_t current_band_index(RfAnalyzerApp* app) {
     return RfBand433;
 }
 
-// Find index of test frequency in our predefined list
-static uint8_t current_test_freq_index(RfAnalyzerApp* app) {
-    for(uint8_t i = 0; i < COUNT_OF(test_freq_values); i++) {
-        if(test_freq_values[i] == app->auto_test_config.test_frequency) return i;
-    }
-    return 1; // Default to 433.92 MHz
-}
-
 static uint8_t current_tx_duration_index(RfAnalyzerApp* app) {
     for(uint8_t i = 0; i < COUNT_OF(tx_duration_values); i++) {
         if(tx_duration_values[i] == app->auto_test_config.tx_duration_ms) return i;
@@ -187,13 +156,6 @@ static uint8_t current_cooldown_index(RfAnalyzerApp* app) {
         if(cooldown_values[i] == app->auto_test_config.cooldown_ms) return i;
     }
     return 4; // Default 1000ms
-}
-
-static uint8_t current_rssi_index(RfAnalyzerApp* app) {
-    for(uint8_t i = 0; i < COUNT_OF(rssi_values); i++) {
-        if(rssi_values[i] == app->auto_test_config.rssi_threshold) return i;
-    }
-    return 2; // Default -70
 }
 
 static uint8_t current_nrf24_channel_index(RfAnalyzerApp* app) {
@@ -243,11 +205,6 @@ void rf_analyzer_scene_settings_on_enter(void* context) {
     variable_item_set_current_value_text(item, app->auto_test_config.enabled ? "ON" : "OFF");
 
     item = variable_item_list_add(
-        list, "Test Frequency", COUNT_OF(test_freq_values), auto_test_freq_changed, app);
-    variable_item_set_current_value_index(item, current_test_freq_index(app));
-    variable_item_set_current_value_text(item, test_freq_labels[current_test_freq_index(app)]);
-
-    item = variable_item_list_add(
         list, "TX Duration", COUNT_OF(tx_duration_values), auto_test_tx_duration_changed, app);
     variable_item_set_current_value_index(item, current_tx_duration_index(app));
     variable_item_set_current_value_text(item, tx_duration_labels[current_tx_duration_index(app)]);
@@ -256,16 +213,6 @@ void rf_analyzer_scene_settings_on_enter(void* context) {
         list, "Cooldown", COUNT_OF(cooldown_values), auto_test_cooldown_changed, app);
     variable_item_set_current_value_index(item, current_cooldown_index(app));
     variable_item_set_current_value_text(item, cooldown_labels[current_cooldown_index(app)]);
-
-    item = variable_item_list_add(
-        list, "RSSI Threshold", COUNT_OF(rssi_values), auto_test_rssi_changed, app);
-    variable_item_set_current_value_index(item, current_rssi_index(app));
-    variable_item_set_current_value_text(item, rssi_labels[current_rssi_index(app)]);
-
-    item = variable_item_list_add(
-        list, "RX Modulation", RfPresetCount, auto_test_rx_preset_changed, app);
-    variable_item_set_current_value_index(item, app->auto_test_config.rx_preset);
-    variable_item_set_current_value_text(item, rf_preset_name(app->auto_test_config.rx_preset));
 
     item =
         variable_item_list_add(list, "Require Decode", 2, auto_test_require_decode_changed, app);

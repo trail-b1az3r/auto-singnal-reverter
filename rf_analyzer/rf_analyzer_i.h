@@ -76,3 +76,5 @@ void rf_app_add_signal(RfAnalyzerApp* app, const RfSignal* signal);
 void rf_app_clear_signals(RfAnalyzerApp* app);
 bool rf_app_add_freq(RfAnalyzerApp* app, uint32_t freq);
 void rf_app_remove_freq(RfAnalyzerApp* app, uint8_t index);
+// Restores the default Scan-scene scanner callback (implemented in rf_analyzer.c).
+void rf_app_scanner_restore_callback(RfAnalyzerApp* app);
