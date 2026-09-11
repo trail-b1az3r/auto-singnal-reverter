@@ -23,6 +23,8 @@
 #include "helpers/rf_analyzer_types.h"
 #include "helpers/rf_analyzer_scanner.h"
 #include "helpers/rf_analyzer_capture.h"
+#include "helpers/rf_analyzer_tx.h"
+#include "helpers/rf_analyzer_nrf24.h"
 #include "views/rf_analyzer_scan_view.h"
 
 typedef enum {
@@ -47,6 +49,9 @@ typedef struct {
     RfScanner* scanner;
     RfCapture* capture;
 
+    // TX engine for Auto Inverse Test
+    RfTxEngine* tx_engine;
+
     // Session state (in memory only)
     RfSignal signals[RF_ANALYZER_MAX_SIGNALS];
     uint8_t signal_count;
@@ -56,6 +61,7 @@ typedef struct {
     uint8_t freq_list_current; // index highlighted in "cycle" mode
 
     RfScanConfig config;
+    RfAutoTestConfig auto_test_config;
 
     // Currently selected signal / analyze target
     uint8_t selected_signal;

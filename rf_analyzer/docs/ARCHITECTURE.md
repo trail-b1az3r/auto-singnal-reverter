@@ -1,9 +1,9 @@
 # RF scanning & analysis architecture
 
-This document explains the receive-side signal path and how the application is
-structured. The design goal is: **discover activity quickly, then let the user
-inspect one signal at a time in depth — without ever transmitting and without
-blocking the UI.**
+This document explains the signal path and how the application is structured.
+The primary design goal is: **discover activity quickly, then let the user
+inspect one signal at a time in depth.** An optional **Auto Inverse Test** mode
+adds a controlled, gated transmit path for authorized laboratory equipment testing.
 
 ## Threading model
 
@@ -18,14 +18,17 @@ blocking the UI.**
    ├──────────────► Capture (subghz_devices async RX) ── timing on one freq
    │                    edge callback updates RfCaptureStats (interrupt ctx)
    │
+   ├──────────────► Auto Test TX (subghz_devices async TX / furi_hal_nrf24)
+   │                    bounded inverse waveform transmission
+   │
    └──────────────► UI timer (FuriTimer)  ── pulls live status @ 4–10 Hz,
-                        updates view models (lock-protected)
+                         updates view models (lock-protected)
 ```
 
 The GUI thread never does RF work directly, so the interface stays responsive
-while a sweep or a decode is running. The scanner and the capture pipeline are
-never active at the same time — each acquires the single CC1101 while its scene
-is on screen and releases it on scene exit.
+while a sweep, decode, or test transmission is running. The scanner, capture,
+and TX engines are mutually exclusive — each acquires the radio (CC1101 or
+NRF24) while its scene is active and releases it on scene exit.
 
 ## 1. Frequency discovery — the RSSI sweep (`helpers/rf_analyzer_scanner.c`)
 
@@ -86,22 +89,57 @@ of pretending to decode, the Analyze screen shows the measured timing and states
 plainly that the protocol is *not identified*. This satisfies the requirement to
 clearly indicate when a signal cannot be decoded.
 
-Captured data lives **only in memory** for the session. Nothing is transmitted.
+Captured data lives **only in memory** for the session.
 
-## 3. Controlled testing — reframed as receive-side inspection
+## 3. Auto Inverse Test — controlled inverse waveform transmission (`helpers/rf_analyzer_tx.c`, `scenes/rf_analyzer_scene_auto_test.c`)
 
-The original brief asked for an "inverse/response" transmit test mode. That is a
-transmitter and is intentionally **not implemented** — a signal-triggered
-multi-frequency responder is a jammer regardless of UI framing, and operating
-one is unlawful in most jurisdictions.
+**Disabled by default.** Only active when user explicitly enables `Auto Inverse`
+in Settings and opens the *Auto Inverse Test* scene.
 
-The lawful research equivalent that *is* implemented:
+### Workflow (state machine)
 
-- **Multiple-frequency testing** — the Frequency List stores candidates and lets
-  you step through them manually; selecting one re-parks the **receiver** on it.
-- **Controlled measurement** — point the analyzer at a signal produced by your
-  own, properly licensed test transmitter or signal generator (see
-  `LEGAL_TEST_SETUP.md`) and observe how the tool measures and decodes it.
+```
+RX MONITOR → DETECTED → ANALYZING → GENERATING → TRANSMITTING → COOLDOWN → RX MONITOR
+```
+
+1. **RX MONITOR** — Park on configured `test_frequency`, run capture to stream edges.
+2. **DETECTED** — Edge count exceeds threshold (signal present above RSSI threshold).
+3. **ANALYZING** — Measure pulse timing, estimate bitrate, verify modulation support.
+4. **GENERATING** — Build logical inverse waveform:
+   - Modulation classified from RX preset (OOK/2-FSK/NRF24)
+   - Edge sequence inverted: levels flipped (mark↔space), durations preserved
+   - *Limitation:* Full edge history not captured; inverse synthesized from
+     measured avg/min pulse width and estimated burst duration.
+5. **TRANSMITTING** — Send inverse via:
+   - **Sub-GHz:** `subghz_devices_start_async_tx()` with edge callback (CC1101)
+   - **NRF24:** `furi_hal_nrf24_tx()` packetized (NRF24L01+)
+   - Duration clamped to `tx_duration_ms` (max 10 s)
+   - Prominent `>>> AUTO TX <<<` displayed on screen
+6. **COOLDOWN** — Enforce `cooldown_ms` minimum gap (0–60 s, 0 only if override enabled)
+7. **Back to RX** — Resume monitoring on test frequency
+
+### Safeguards (enforced in code)
+
+| Safeguard | Implementation |
+|-----------|----------------|
+| Disabled by default | `auto_test_config.enabled = false` at startup |
+| Explicit enable | User must toggle `Auto Inverse` = ON in Settings |
+| Single test frequency | `test_frequency` setting (predefined list, not a range) |
+| Max TX duration | `tx_duration_ms` clamped to `RF_AUTO_TEST_MAX_DURATION_MS` (10 s) |
+| Cooldown period | `cooldown_ms` enforced; 0 only if `remove_cooldown_limit = true` |
+| Decode requirement | `require_decode = true` by default; unsupported modulations rejected |
+| Emergency stop | Back button → `rf_tx_emergency_stop()` / `rf_nrf24_emergency_stop()` |
+| AUTO TX indicator | Widget shows `>>> AUTO TX <<<` prominently during TX |
+| Exit cleanup | `rf_analyzer_app_free()` calls `rf_tx_engine_free()` + `rf_nrf24_deinit()` |
+| Firmware restrictions | `subghz_devices_is_frequency_valid()` checked before every TX |
+| NRF24 mode | Separate radio path, same safeguards, packetized transmission |
+
+### TX waveform generation (`rf_tx_generate_inverse`)
+
+- Input: `RfCaptureStats` (edge count, min/avg/max pulse, est. bitrate) + `RfSignal` (freq, duration, preset)
+- Output: `RfTxWaveform` with `edges[]` array (level, duration_us)
+- Modulation: OOK → `FuriHalSubGhzPresetOok650Async`; 2-FSK → `FuriHalSubGhzPreset2FSKDev476Async`
+- NRF24 handled separately via `rf_nrf24_transmit_inverse()`
 
 ## 4. Radio resource lifecycle
 
@@ -110,15 +148,20 @@ Every code path that touches the radio pairs acquisition with release:
 - Scanner: `begin → reset → idle → load_preset → (sweep) → idle → sleep → end`.
 - Capture: `begin → reset → idle → load_preset → set_frequency → start_async_rx →
   (analyze) → stop_async_rx → idle → sleep → end`.
+- Auto Test TX (Sub-GHz): `begin → reset → idle → load_preset → set_frequency →
+  start_async_tx → (transmit) → stop_async_tx → idle → sleep → end`.
+- Auto Test TX (NRF24): `furi_hal_nrf24_init() → set_channel/address/rate/power →
+  set_mode(TX) → (transmit packets) → set_mode(PowerDown) → deinit()`.
 - Scene `on_exit` handlers stop the active engine, and `rf_analyzer_app_free`
-  stops both engines before freeing them, so exiting the app always leaves the
-  CC1101 in sleep.
+  stops all engines before freeing them, so exiting the app always leaves the
+  radios in sleep/power-down.
 
 ## UI structure (`scenes/`)
 
 A standard Flipper **ViewDispatcher + SceneManager** app. One scene per screen
-(`start`, `scan`, `signals`, `analyze`, `freq_list`, `settings`, `about`),
-sharing four views: a `Submenu`, a `VariableItemList` (settings), a `Widget`
-(analyze/about) and one custom `View` for the live scan display. The scene table
-in `scenes/rf_analyzer_scene_config.h` generates the enum and handler arrays via
-X-macros, so adding a screen is a one-line change plus a handler file.
+(`start`, `scan`, `signals`, `analyze`, `freq_list`, `settings`, `about`,
+`auto_test`), sharing four views: a `Submenu`, a `VariableItemList` (settings),
+a `Widget` (analyze/about/auto_test) and one custom `View` for the live scan
+display. The scene table in `scenes/rf_analyzer_scene_config.h` generates the
+enum and handler arrays via X-macros, so adding a screen is a one-line change
+plus a handler file.

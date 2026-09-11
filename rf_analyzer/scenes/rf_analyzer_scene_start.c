@@ -6,6 +6,7 @@ typedef enum {
     StartItemSignals,
     StartItemAnalyze,
     StartItemFreqList,
+    StartItemAutoTest,
     StartItemSettings,
     StartItemAbout,
 } StartItem;
@@ -24,6 +25,7 @@ void rf_analyzer_scene_start_on_enter(void* context) {
     submenu_add_item(menu, "Detected Signals", StartItemSignals, rf_scene_start_callback, app);
     submenu_add_item(menu, "Analyze", StartItemAnalyze, rf_scene_start_callback, app);
     submenu_add_item(menu, "Frequency List", StartItemFreqList, rf_scene_start_callback, app);
+    submenu_add_item(menu, "Auto Inverse Test", StartItemAutoTest, rf_scene_start_callback, app);
     submenu_add_item(menu, "Settings", StartItemSettings, rf_scene_start_callback, app);
     submenu_add_item(menu, "About", StartItemAbout, rf_scene_start_callback, app);
     submenu_set_selected_item(
@@ -51,6 +53,9 @@ bool rf_analyzer_scene_start_on_event(void* context, SceneManagerEvent event) {
         return true;
     case StartItemFreqList:
         scene_manager_next_scene(app->scene_manager, RfSceneFreqList);
+        return true;
+    case StartItemAutoTest:
+        scene_manager_next_scene(app->scene_manager, RfSceneAutoTest);
         return true;
     case StartItemSettings:
         scene_manager_next_scene(app->scene_manager, RfSceneSettings);

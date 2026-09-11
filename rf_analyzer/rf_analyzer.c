@@ -1,5 +1,7 @@
 #include "rf_analyzer_i.h"
 #include "scenes/rf_analyzer_scene.h"
+#include "helpers/rf_analyzer_tx.h"
+#include "scenes/rf_analyzer_scene_auto_test.h"
 
 /*
  * RF Analyzer — application entry point, wiring and session state.
@@ -87,6 +89,8 @@ static void rf_analyzer_config_defaults(RfAnalyzerApp* app) {
     app->config.dwell_ms = 10;         // 10 ms per step
     app->config.rssi_trigger = -70.0f; // dBm
     app->config.preset = RfPresetOok650;
+
+    rf_auto_test_config_defaults(&app->auto_test_config);
 }
 
 static RfAnalyzerApp* rf_analyzer_app_alloc(void) {
@@ -126,6 +130,9 @@ static RfAnalyzerApp* rf_analyzer_app_alloc(void) {
     rf_scanner_set_callback(app->scanner, rf_analyzer_on_signal, app);
     app->capture = rf_capture_alloc();
 
+    // TX engine for Auto Inverse Test (lazy init, but allocate here for cleanup)
+    app->tx_engine = rf_tx_engine_alloc();
+
     rf_analyzer_config_defaults(app);
     return app;
 }
@@ -136,6 +143,15 @@ static void rf_analyzer_app_free(RfAnalyzerApp* app) {
     rf_capture_stop(app->capture);
     rf_scanner_free(app->scanner);
     rf_capture_free(app->capture);
+
+    // Free TX engine
+    if(app->tx_engine) {
+        rf_tx_engine_free(app->tx_engine);
+        app->tx_engine = NULL;
+    }
+
+    // Ensure NRF24 is deinitialized
+    rf_nrf24_deinit();
 
     view_dispatcher_remove_view(app->view_dispatcher, RfViewSubmenu);
     view_dispatcher_remove_view(app->view_dispatcher, RfViewVarList);

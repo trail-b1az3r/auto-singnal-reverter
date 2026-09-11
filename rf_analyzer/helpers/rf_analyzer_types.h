@@ -3,10 +3,10 @@
 /*
  * Shared data types for the RF Analyzer.
  *
- * The application is strictly receive-only. These structures describe what the
- * radio *observed* (RSSI, timing, decoded protocol) and how the user has
- * configured the scan. Nothing here describes a transmission — there is no
- * transmit path in this application.
+ * The application is primarily receive-only. An optional Auto Inverse Test mode
+ * can transmit a logical inverse of a captured signal for authorized lab testing.
+ * All TX paths are gated by explicit user enable, configured frequency range,
+ * maximum duration, cooldown, and firmware legality checks.
  */
 
 #include <furi.h>
@@ -17,6 +17,13 @@
 #define RF_ANALYZER_MAX_SIGNALS      32
 #define RF_ANALYZER_MAX_FREQ_LIST    32
 #define RF_ANALYZER_PROTO_NAME_LEN   32
+
+// Auto Inverse Test limits
+#define RF_AUTO_TEST_MAX_DURATION_MS  10000  // 10 seconds max TX
+#define RF_AUTO_TEST_MAX_COOLDOWN_MS  60000  // 60 seconds max cooldown
+#define RF_AUTO_TEST_MIN_DURATION_MS  1      // 1 ms minimum
+#define RF_AUTO_TEST_MIN_COOLDOWN_MS  0      // 0 = no cooldown (user override)
+#define RF_AUTO_TEST_MAX_PULSES       256    // Max pulse edges to capture/invert
 
 // Sub-GHz bands the CC1101 in the Flipper Zero can tune. These are the coarse
 // ranges the firmware's frequency table allows; the actual per-frequency
@@ -67,3 +74,92 @@ const char* rf_preset_name(RfPreset preset);
 FuriHalSubGhzPreset rf_preset_to_hal(RfPreset preset);
 const char* rf_band_name(RfBand band);
 void rf_band_bounds(RfBand band, uint32_t* start, uint32_t* end);
+
+// Sub-GHz modulation types supported for TX inverse generation
+typedef enum {
+    RfModOOK = 0,
+    RfMod2FSK,
+    RfModNRF24,
+    RfModCount,
+} RfModulation;
+
+// TX waveform descriptor — a sequence of (level, duration_us) edges.
+// Level: 0 = low/space, 1 = high/mark. Duration in microseconds.
+typedef struct {
+    bool level;
+    uint32_t duration_us;
+} RfTxEdge;
+
+typedef struct {
+    RfTxEdge edges[RF_AUTO_TEST_MAX_PULSES];
+    uint16_t edge_count;
+    uint32_t total_duration_us;
+    RfModulation modulation;
+    uint32_t frequency;     // Hz
+    uint32_t bitrate;       // estimated bits/sec
+    bool valid;             // true if waveform was successfully generated
+} RfTxWaveform;
+
+// Auto Inverse Test configuration
+typedef struct {
+    bool enabled;                    // master enable (disabled by default)
+    uint32_t test_frequency;         // Hz — single frequency to monitor/TX (not a range)
+    uint32_t tx_duration_ms;         // max TX on-time per trigger
+    uint32_t cooldown_ms;            // minimum gap between TX bursts (0 = no limit)
+    float rssi_threshold;            // dBm — only act on signals above this
+    RfPreset rx_preset;              // modulation preset for RX analysis
+    bool require_decode;             // only TX if protocol was decoded
+    bool nrf24_mode;                 // use NRF24 radio instead of Sub-GHz
+    uint8_t nrf24_channel;           // NRF24 channel (0-125)
+    bool remove_cooldown_limit;      // allow 0 cooldown (full automation override)
+    bool remove_all_restrictions;  // when enabled: bypasses ALL checks (freq, duration, decode, limits)
+} RfAutoTestConfig;
+
+// Default configuration for Auto Inverse Test
+static inline void rf_auto_test_config_defaults(RfAutoTestConfig* config) {
+    config->enabled = false;
+    config->test_frequency = 433920000; // 433.92 MHz
+    config->tx_duration_ms = 100;
+    config->cooldown_ms = 1000;
+    config->rssi_threshold = -70.0f;
+    config->rx_preset = RfPresetOok650;
+    config->require_decode = true;
+    config->nrf24_mode = false;
+    config->nrf24_channel = 2; // Common NRF24 default
+    config->remove_cooldown_limit = false;
+    config->remove_all_restrictions = false;
+}
+
+// Inverse waveform generation result
+typedef enum {
+    RfInvertOk = 0,
+    RfInvertErrUnsupportedModulation,
+    RfInvertErrNoSignal,
+    RfInvertErrTooComplex,
+    RfInvertErrTxNotAllowed,
+    RfInvertErrHardware,
+} RfInvertResult;
+
+// Forward declarations for TX engine
+struct RfTxEngine;
+typedef struct RfTxEngine RfTxEngine;
+
+RfTxEngine* rf_tx_engine_alloc(void);
+void rf_tx_engine_free(RfTxEngine* engine);
+
+// Generate inverse waveform from captured signal edges.
+// Returns RfInvertOk on success, fills waveform.
+RfInvertResult rf_tx_generate_inverse(
+    const RfCaptureStats* capture_stats,
+    const RfSignal* signal,
+    RfTxWaveform* out_waveform);
+
+// Transmit a prepared waveform. Blocks until done or error.
+// Returns RfInvertOk on success.
+RfInvertResult rf_tx_transmit_waveform(RfTxEngine* engine, const RfTxWaveform* waveform, uint32_t max_duration_ms);
+
+// Emergency stop any ongoing transmission.
+void rf_tx_emergency_stop(RfTxEngine* engine);
+
+// NRF24 TX support
+RfInvertResult rf_nrf24_transmit_inverse(const RfTxWaveform* waveform, uint8_t channel, uint32_t max_duration_ms);

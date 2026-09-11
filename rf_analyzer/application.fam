@@ -1,11 +1,13 @@
-# Flipper Zero application manifest for the RF Analyzer (receive-only).
+# Flipper Zero application manifest for the RF Analyzer.
 #
 # This app performs Sub-GHz signal discovery, measurement and decoding using
-# the Flipper Zero's built-in CC1101 radio. It never transmits: there is no
-# TX code path anywhere in this application.
+# the Flipper Zero's built-in CC1101 radio. An optional Auto Inverse Test mode
+# can transmit a logical inverse of a captured signal for authorized lab testing.
+# All TX paths are gated by explicit user enable, configured frequency range,
+# maximum duration, cooldown, and firmware legality checks.
 App(
     appid="rf_analyzer",
-    name="RF Analyzer (RX)",
+    name="RF Analyzer",
     apptype=FlipperAppType.EXTERNAL,
     entry_point="rf_analyzer_app",
     requires=[
@@ -15,11 +17,11 @@ App(
     ],
     # Sub-GHz device + protocol libraries shipped with the firmware SDK.
     fap_libs=["subghz"],
-    stack_size=4 * 1024,
+    stack_size=6 * 1024,
     fap_category="Sub-GHz",
     fap_icon="images/rf_analyzer_10px.png",
     fap_icon_assets="images",
-    fap_version="1.0",
+    fap_version="2.0",
     fap_author="RF research tooling",
-    fap_description="Receive-only Sub-GHz scanner, analyzer and decoder for authorized RF research. No transmit capability.",
+    fap_description="Sub-GHz scanner, analyzer with optional Auto Inverse Test mode for authorized lab equipment testing. TX disabled by default.",
 )
