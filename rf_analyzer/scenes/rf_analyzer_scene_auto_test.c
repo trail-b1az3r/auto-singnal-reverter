@@ -1,5 +1,4 @@
 #include "../rf_analyzer_i.h"
-#include "rf_analyzer_scene_auto_test.h"
 #include "../helpers/rf_analyzer_tx.h"
 #include "../helpers/rf_analyzer_nrf24.h"
 
@@ -31,14 +30,14 @@
 
 // Auto Test state machine
 typedef enum {
-    AutoStateIdle = 0,        // Waiting for user to start
-    AutoStateRx,              // Monitoring frequency (RX)
-    AutoStateDetected,        // Signal detected, analyzing
-    AutoStateAnalyzing,       // Running capture/analysis
-    AutoStateGenerating,      // Building inverse waveform
-    AutoStateTransmitting,    // TX active (AUTO TX)
-    AutoStateCooldown,        // Enforcing cooldown period
-    AutoStateError,           // Error state
+    AutoStateIdle = 0, // Waiting for user to start
+    AutoStateRx, // Monitoring frequency (RX)
+    AutoStateDetected, // Signal detected, analyzing
+    AutoStateAnalyzing, // Running capture/analysis
+    AutoStateGenerating, // Building inverse waveform
+    AutoStateTransmitting, // TX active (AUTO TX)
+    AutoStateCooldown, // Enforcing cooldown period
+    AutoStateError, // Error state
 } AutoTestState;
 
 // State names for display
@@ -55,9 +54,9 @@ static const char* const auto_state_names[] = {
 
 // Custom events for the auto test scene
 typedef enum {
-    AutoEventStartStop = 100,  // OK button: start/stop test
-    AutoEventEmergencyStop,    // Back button: emergency stop
-    AutoEventTick,             // Timer tick for state machine
+    AutoEventStartStop = 100, // OK button: start/stop test
+    AutoEventEmergencyStop, // Back button: emergency stop
+    AutoEventTick, // Timer tick for state machine
 } AutoEvent;
 
 // Context for the auto test scene
@@ -85,28 +84,20 @@ static void auto_test_timer_cb(void* context);
 static void auto_test_start_test(AutoTestContext* ctx);
 static void auto_test_stop_test(AutoTestContext* ctx);
 static void auto_test_emergency_stop(AutoTestContext* ctx);
-static void auto_test_rx_callback(void* context);
-static void auto_test_back_callback(void* context);
 static bool auto_test_check_frequency_valid(uint32_t freq);
 static void auto_test_state_machine(AutoTestContext* ctx);
 
-// UI callbacks
-static void auto_test_ok_cb(void* context) {
+// Widget center-button callback (ButtonCallback signature). Short press
+// toggles the test; the physical Back key is handled via the scene Back
+// event below so it can emergency-stop an active transmission first.
+static void auto_test_ok_cb(GuiButtonType btn, InputType type, void* context) {
+    UNUSED(btn);
+    if(type != InputTypeShort) return;
     AutoTestContext* ctx = context;
     if(ctx->state == AutoStateIdle || ctx->state == AutoStateError) {
         auto_test_start_test(ctx);
     } else {
         auto_test_stop_test(ctx);
-    }
-}
-
-static void auto_test_back_cb(void* context) {
-    AutoTestContext* ctx = context;
-    if(ctx->state == AutoStateTransmitting || ctx->state == AutoStateGenerating) {
-        auto_test_emergency_stop(ctx);
-    } else {
-        auto_test_stop_test(ctx);
-        scene_manager_previous_scene(ctx->app->scene_manager);
     }
 }
 
@@ -140,7 +131,8 @@ static void auto_test_start_test(AutoTestContext* ctx) {
 
     if(!config->remove_all_restrictions) {
         if(!auto_test_check_frequency_valid(config->test_frequency)) {
-            snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Test frequency not allowed by firmware");
+            snprintf(
+                ctx->error_msg, sizeof(ctx->error_msg), "Test frequency not allowed by firmware");
             ctx->state = AutoStateError;
             return;
         }
@@ -154,8 +146,7 @@ static void auto_test_start_test(AutoTestContext* ctx) {
         }
 
         // Validate cooldown (unless override enabled)
-        if(!config->remove_cooldown_limit &&
-           config->cooldown_ms > RF_AUTO_TEST_MAX_COOLDOWN_MS) {
+        if(!config->remove_cooldown_limit && config->cooldown_ms > RF_AUTO_TEST_MAX_COOLDOWN_MS) {
             snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Cooldown too long (max 60s)");
             ctx->state = AutoStateError;
             return;
@@ -331,12 +322,16 @@ static void auto_test_state_machine(AutoTestContext* ctx) {
             ctx->waveform.valid = true;
             res = RfInvertOk;
         } else {
-            res = rf_tx_generate_inverse(&ctx->capture_stats, &ctx->detected_signal, &ctx->waveform);
+            res =
+                rf_tx_generate_inverse(&ctx->capture_stats, &ctx->detected_signal, &ctx->waveform);
         }
         if(res != RfInvertOk) {
             switch(res) {
             case RfInvertErrUnsupportedModulation:
-                snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Modulation not supported for inverse");
+                snprintf(
+                    ctx->error_msg,
+                    sizeof(ctx->error_msg),
+                    "Modulation not supported for inverse");
                 break;
             case RfInvertErrNoSignal:
                 snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Insufficient signal data");
@@ -345,10 +340,12 @@ static void auto_test_state_machine(AutoTestContext* ctx) {
                 snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Signal too complex for inverse");
                 break;
             case RfInvertErrTxNotAllowed:
-                snprintf(ctx->error_msg, sizeof(ctx->error_msg), "TX not allowed at this frequency");
+                snprintf(
+                    ctx->error_msg, sizeof(ctx->error_msg), "TX not allowed at this frequency");
                 break;
             default:
-                snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Inverse generation failed (%d)", res);
+                snprintf(
+                    ctx->error_msg, sizeof(ctx->error_msg), "Inverse generation failed (%d)", res);
             }
             ctx->state = AutoStateError;
             break;
@@ -392,7 +389,8 @@ static void auto_test_state_machine(AutoTestContext* ctx) {
         if(res != RfInvertOk) {
             switch(res) {
             case RfInvertErrTxNotAllowed:
-                snprintf(ctx->error_msg, sizeof(ctx->error_msg), "TX blocked by firmware/hardware");
+                snprintf(
+                    ctx->error_msg, sizeof(ctx->error_msg), "TX blocked by firmware/hardware");
                 break;
             case RfInvertErrUnsupportedModulation:
                 snprintf(
@@ -441,34 +439,44 @@ static void auto_test_build_ui(RfAnalyzerApp* app) {
 
     if(!ctx) return;
 
-    // widget_reset() clears button elements too, so re-register them on
-    // every rebuild (the timer calls this ~10 Hz).
-    widget_add_button_element(w, GuiButtonTypeRight, "OK", auto_test_ok_cb, ctx);
-    widget_add_button_element(w, GuiButtonTypeLeft, "Back", auto_test_back_cb, ctx);
+    // widget_reset() clears button elements too, so re-register on every
+    // rebuild (the timer calls this ~10 Hz). Back is a navigation event,
+    // handled in on_event, not as a widget button.
+    widget_add_button_element(w, GuiButtonTypeCenter, "OK", auto_test_ok_cb, ctx);
 
     uint32_t now = furi_get_tick();
 
     // Header with prominent AUTO TX indicator
     if(ctx->state == AutoStateTransmitting) {
-        widget_add_string_element(w, 64, 8, AlignCenter, AlignBottom, FontPrimary, ">>> AUTO TX <<<");
-        widget_add_string_element(w, 64, 18, AlignCenter, AlignBottom, FontSecondary, "TRANSMITTING INVERSE");
+        widget_add_string_element(
+            w, 64, 8, AlignCenter, AlignBottom, FontPrimary, ">>> AUTO TX <<<");
+        widget_add_string_element(
+            w, 64, 18, AlignCenter, AlignBottom, FontSecondary, "TRANSMITTING INVERSE");
     } else {
-        widget_add_string_element(w, 64, 8, AlignCenter, AlignBottom, FontPrimary, "AUTO INVERSE TEST");
+        widget_add_string_element(
+            w, 64, 8, AlignCenter, AlignBottom, FontPrimary, "AUTO INVERSE TEST");
     }
 
     // Frequency
     char line[64];
     uint32_t freq = app->auto_test_config.test_frequency;
-    snprintf(line, sizeof(line), "Freq: %lu.%03lu MHz",
-             (unsigned long)(freq / 1000000),
-             (unsigned long)((freq % 1000000) / 1000));
+    snprintf(
+        line,
+        sizeof(line),
+        "Freq: %lu.%03lu MHz",
+        (unsigned long)(freq / 1000000),
+        (unsigned long)((freq % 1000000) / 1000));
     widget_add_string_element(w, 2, 22, AlignLeft, AlignBottom, FontSecondary, line);
 
     // Mode indicator
     if(app->auto_test_config.nrf24_mode) {
         snprintf(line, sizeof(line), "Mode: NRF24 Ch%u", app->auto_test_config.nrf24_channel);
     } else {
-        snprintf(line, sizeof(line), "Mode: Sub-GHz %s", rf_preset_name(app->auto_test_config.rx_preset));
+        snprintf(
+            line,
+            sizeof(line),
+            "Mode: Sub-GHz %s",
+            rf_preset_name(app->auto_test_config.rx_preset));
     }
     widget_add_string_element(w, 2, 32, AlignLeft, AlignBottom, FontSecondary, line);
 
@@ -485,43 +493,55 @@ static void auto_test_build_ui(RfAnalyzerApp* app) {
             widget_add_string_element(
                 w, 2, 60, AlignLeft, AlignBottom, FontSecondary, "UNSAFE - authorized lab only");
         } else {
-            widget_add_string_element(w, 2, 52, AlignLeft, AlignBottom, FontSecondary, "Press OK to start");
-            widget_add_string_element(w, 2, 60, AlignLeft, AlignBottom, FontSecondary, "Back: Exit");
+            widget_add_string_element(
+                w, 2, 52, AlignLeft, AlignBottom, FontSecondary, "Press OK to start");
+            widget_add_string_element(
+                w, 2, 60, AlignLeft, AlignBottom, FontSecondary, "Back: Exit");
         }
         break;
 
     case AutoStateRx:
-        widget_add_string_element(w, 2, 52, AlignLeft, AlignBottom, FontSecondary, "Monitoring for signal...");
-        snprintf(line, sizeof(line), "Edges: %lu  Bitrate: ~%lu bps",
-                 (unsigned long)ctx->capture_stats.edges,
-                 (unsigned long)ctx->capture_stats.est_bitrate);
+        widget_add_string_element(
+            w, 2, 52, AlignLeft, AlignBottom, FontSecondary, "Monitoring for signal...");
+        snprintf(
+            line,
+            sizeof(line),
+            "Edges: %lu  Bitrate: ~%lu bps",
+            (unsigned long)ctx->capture_stats.edges,
+            (unsigned long)ctx->capture_stats.est_bitrate);
         widget_add_string_element(w, 2, 60, AlignLeft, AlignBottom, FontSecondary, line);
         break;
 
     case AutoStateDetected:
-        widget_add_string_element(w, 2, 52, AlignLeft, AlignBottom, FontSecondary, "Signal detected - verifying");
+        widget_add_string_element(
+            w, 2, 52, AlignLeft, AlignBottom, FontSecondary, "Signal detected - verifying");
         break;
 
     case AutoStateAnalyzing:
-        widget_add_string_element(w, 2, 52, AlignLeft, AlignBottom, FontSecondary, "Analyzing signal timing...");
+        widget_add_string_element(
+            w, 2, 52, AlignLeft, AlignBottom, FontSecondary, "Analyzing signal timing...");
         break;
 
     case AutoStateGenerating:
-        widget_add_string_element(w, 2, 52, AlignLeft, AlignBottom, FontSecondary, "Generating inverse waveform...");
+        widget_add_string_element(
+            w, 2, 52, AlignLeft, AlignBottom, FontSecondary, "Generating inverse waveform...");
         break;
 
     case AutoStateTransmitting:
         snprintf(line, sizeof(line), "TX Duration: %lu ms", app->auto_test_config.tx_duration_ms);
         widget_add_string_element(w, 2, 32, AlignLeft, AlignBottom, FontSecondary, line);
-        widget_add_string_element(w, 2, 52, AlignLeft, AlignBottom, FontSecondary, "BACK = EMERGENCY STOP");
+        widget_add_string_element(
+            w, 2, 52, AlignLeft, AlignBottom, FontSecondary, "BACK = EMERGENCY STOP");
         break;
 
     case AutoStateCooldown: {
         uint32_t remaining = (ctx->cooldown_end_tick > now) ?
-            (ctx->cooldown_end_tick - now) / furi_ms_to_ticks(1) : 0;
+                                 (ctx->cooldown_end_tick - now) / furi_ms_to_ticks(1) :
+                                 0;
         snprintf(line, sizeof(line), "Cooldown: %lu ms", (unsigned long)remaining);
         widget_add_string_element(w, 2, 52, AlignLeft, AlignBottom, FontSecondary, line);
-        widget_add_string_element(w, 2, 60, AlignLeft, AlignBottom, FontSecondary, "Returning to RX...");
+        widget_add_string_element(
+            w, 2, 60, AlignLeft, AlignBottom, FontSecondary, "Returning to RX...");
         break;
     }
 
@@ -543,10 +563,9 @@ void rf_analyzer_scene_auto_test_on_enter(void* context) {
     s_ctx->app = app;
     s_ctx->state = AutoStateIdle;
 
-    // Set up widget callbacks
+    // Set up widget callbacks (build_ui re-registers them after each reset)
     widget_reset(app->widget);
-    widget_add_button_element(app->widget, GuiButtonTypeRight, "OK", auto_test_ok_cb, s_ctx);
-    widget_add_button_element(app->widget, GuiButtonTypeLeft, "Back", auto_test_back_cb, s_ctx);
+    widget_add_button_element(app->widget, GuiButtonTypeCenter, "OK", auto_test_ok_cb, s_ctx);
 
     // Start UI timer
     app->ui_timer = furi_timer_alloc(auto_test_timer_cb, FuriTimerTypePeriodic, s_ctx);
@@ -557,9 +576,17 @@ void rf_analyzer_scene_auto_test_on_enter(void* context) {
 }
 
 bool rf_analyzer_scene_auto_test_on_event(void* context, SceneManagerEvent event) {
-    UNUSED(context);
-    UNUSED(event);
-    // All events handled via widget button callbacks
+    RfAnalyzerApp* app = context;
+    (void)app;
+    if(event.type != SceneManagerEventTypeBack) return false;
+
+    // Physical Back key: emergency-stop an active test and stay in the scene;
+    // when idle, let the scene manager pop the scene (on_exit cleans up).
+    if(s_ctx && (s_ctx->state != AutoStateIdle) && (s_ctx->state != AutoStateError)) {
+        auto_test_emergency_stop(s_ctx);
+        auto_test_build_ui(s_ctx->app);
+        return true;
+    }
     return false;
 }
 

@@ -18,11 +18,11 @@
  * noise spikes or dead air.
  */
 
-#define TAG "RfCapture"
+#define TAG            "RfCapture"
 #define RF_DEVICE_NAME "cc1101_int"
 
-#define RF_PULSE_MIN_US 50      // below this = glitch/noise, ignore
-#define RF_PULSE_MAX_US 100000  // above this = inter-frame gap, ignore
+#define RF_PULSE_MIN_US 50 // below this = glitch/noise, ignore
+#define RF_PULSE_MAX_US 100000 // above this = inter-frame gap, ignore
 
 struct RfCapture {
     const SubGhzDevice* device;

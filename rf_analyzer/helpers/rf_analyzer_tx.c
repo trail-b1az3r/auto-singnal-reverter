@@ -14,7 +14,7 @@
  * system Sub-GHz application streams RAW captures for transmission.
  */
 
-#define TAG "RfTxEngine"
+#define TAG            "RfTxEngine"
 #define RF_DEVICE_NAME "cc1101_int"
 
 // Minimum pulse width the CC1101 can reliably generate (depends on data rate)
@@ -40,8 +40,7 @@ static LevelDuration rf_tx_async_callback(void* context) {
 
     if((waveform != NULL) && (idx < waveform->edge_count)) {
         engine->current_edge_idx = idx + 1;
-        return level_duration_make(
-            waveform->edges[idx].level, waveform->edges[idx].duration_us);
+        return level_duration_make(waveform->edges[idx].level, waveform->edges[idx].duration_us);
     }
     return level_duration_reset();
 }
@@ -152,8 +151,7 @@ RfInvertResult rf_tx_generate_inverse(
     // Here we synthesize a plausible inverse based on measured timing.
     // This is a LIMITATION: without the full edge history, we approximate.
 
-    uint32_t pulse_us =
-        capture_stats->avg_us ? capture_stats->avg_us : capture_stats->min_us;
+    uint32_t pulse_us = capture_stats->avg_us ? capture_stats->avg_us : capture_stats->min_us;
     if(pulse_us < RF_TX_MIN_PULSE_US) pulse_us = RF_TX_MIN_PULSE_US;
     if(pulse_us > 100000) pulse_us = 100000; // Cap at 100ms per pulse
 
@@ -234,8 +232,8 @@ RfInvertResult rf_tx_transmit_waveform(
 
     // Start async TX with our LevelDuration stream callback.
     // The devices API takes the callback as void*, so cast explicitly.
-    bool started = subghz_devices_start_async_tx(
-        engine->device, (void*)rf_tx_async_callback, engine);
+    bool started =
+        subghz_devices_start_async_tx(engine->device, (void*)rf_tx_async_callback, engine);
     if(!started) {
         subghz_devices_idle(engine->device);
         subghz_devices_sleep(engine->device);

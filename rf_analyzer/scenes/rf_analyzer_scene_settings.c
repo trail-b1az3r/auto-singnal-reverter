@@ -18,20 +18,20 @@ static const char* const rssi_labels[] = {"-90", "-80", "-70", "-60", "-50"};
 
 // Auto Test configuration values
 static const uint32_t tx_duration_values[] = {1, 10, 50, 100, 200, 500, 1000, 2000, 5000, 10000};
-static const char* const tx_duration_labels[] = {"1ms", "10ms", "50ms", "100ms", "200ms", "500ms", "1s", "2s", "5s", "10s"};
+static const char* const tx_duration_labels[] =
+    {"1ms", "10ms", "50ms", "100ms", "200ms", "500ms", "1s", "2s", "5s", "10s"};
 
 static const uint32_t cooldown_values[] = {0, 100, 250, 500, 1000, 2000, 5000, 10000, 30000, 60000};
-static const char* const cooldown_labels[] = {"OFF", "100ms", "250ms", "500ms", "1s", "2s", "5s", "10s", "30s", "60s"};
+static const char* const cooldown_labels[] =
+    {"OFF", "100ms", "250ms", "500ms", "1s", "2s", "5s", "10s", "30s", "60s"};
 
-static const uint32_t test_freq_values[] = {
-    315000000, 433920000, 868300000, 915000000
-};
-static const char* const test_freq_labels[] = {
-    "315.000 MHz", "433.920 MHz", "868.300 MHz", "915.000 MHz"
-};
+static const uint32_t test_freq_values[] = {315000000, 433920000, 868300000, 915000000};
+static const char* const test_freq_labels[] =
+    {"315.000 MHz", "433.920 MHz", "868.300 MHz", "915.000 MHz"};
 
 static const uint8_t nrf24_channels[] = {0, 1, 2, 10, 20, 40, 60, 80, 100, 125};
-static const char* const nrf24_channel_labels[] = {"Ch 0", "Ch 1", "Ch 2", "Ch 10", "Ch 20", "Ch 40", "Ch 60", "Ch 80", "Ch 100", "Ch 125"};
+static const char* const nrf24_channel_labels[] =
+    {"Ch 0", "Ch 1", "Ch 2", "Ch 10", "Ch 20", "Ch 40", "Ch 60", "Ch 80", "Ch 100", "Ch 125"};
 
 static uint8_t index_of_u32(const uint32_t* arr, uint8_t n, uint32_t v, uint8_t dflt) {
     for(uint8_t i = 0; i < n; i++)
@@ -242,45 +242,60 @@ void rf_analyzer_scene_settings_on_enter(void* context) {
     variable_item_set_current_value_index(item, app->auto_test_config.enabled ? 1 : 0);
     variable_item_set_current_value_text(item, app->auto_test_config.enabled ? "ON" : "OFF");
 
-    item = variable_item_list_add(list, "Test Frequency", COUNT_OF(test_freq_values), auto_test_freq_changed, app);
+    item = variable_item_list_add(
+        list, "Test Frequency", COUNT_OF(test_freq_values), auto_test_freq_changed, app);
     variable_item_set_current_value_index(item, current_test_freq_index(app));
     variable_item_set_current_value_text(item, test_freq_labels[current_test_freq_index(app)]);
 
-    item = variable_item_list_add(list, "TX Duration", COUNT_OF(tx_duration_values), auto_test_tx_duration_changed, app);
+    item = variable_item_list_add(
+        list, "TX Duration", COUNT_OF(tx_duration_values), auto_test_tx_duration_changed, app);
     variable_item_set_current_value_index(item, current_tx_duration_index(app));
     variable_item_set_current_value_text(item, tx_duration_labels[current_tx_duration_index(app)]);
 
-    item = variable_item_list_add(list, "Cooldown", COUNT_OF(cooldown_values), auto_test_cooldown_changed, app);
+    item = variable_item_list_add(
+        list, "Cooldown", COUNT_OF(cooldown_values), auto_test_cooldown_changed, app);
     variable_item_set_current_value_index(item, current_cooldown_index(app));
     variable_item_set_current_value_text(item, cooldown_labels[current_cooldown_index(app)]);
 
-    item = variable_item_list_add(list, "RSSI Threshold", COUNT_OF(rssi_values), auto_test_rssi_changed, app);
+    item = variable_item_list_add(
+        list, "RSSI Threshold", COUNT_OF(rssi_values), auto_test_rssi_changed, app);
     variable_item_set_current_value_index(item, current_rssi_index(app));
     variable_item_set_current_value_text(item, rssi_labels[current_rssi_index(app)]);
 
-    item = variable_item_list_add(list, "RX Modulation", RfPresetCount, auto_test_rx_preset_changed, app);
+    item = variable_item_list_add(
+        list, "RX Modulation", RfPresetCount, auto_test_rx_preset_changed, app);
     variable_item_set_current_value_index(item, app->auto_test_config.rx_preset);
     variable_item_set_current_value_text(item, rf_preset_name(app->auto_test_config.rx_preset));
 
-    item = variable_item_list_add(list, "Require Decode", 2, auto_test_require_decode_changed, app);
+    item =
+        variable_item_list_add(list, "Require Decode", 2, auto_test_require_decode_changed, app);
     variable_item_set_current_value_index(item, app->auto_test_config.require_decode ? 1 : 0);
-    variable_item_set_current_value_text(item, app->auto_test_config.require_decode ? "YES" : "NO");
+    variable_item_set_current_value_text(
+        item, app->auto_test_config.require_decode ? "YES" : "NO");
 
     item = variable_item_list_add(list, "NRF24 Mode", 2, auto_test_nrf24_mode_changed, app);
     variable_item_set_current_value_index(item, app->auto_test_config.nrf24_mode ? 1 : 0);
     variable_item_set_current_value_text(item, app->auto_test_config.nrf24_mode ? "ON" : "OFF");
 
-    item = variable_item_list_add(list, "NRF24 Channel", COUNT_OF(nrf24_channels), auto_test_nrf24_channel_changed, app);
+    item = variable_item_list_add(
+        list, "NRF24 Channel", COUNT_OF(nrf24_channels), auto_test_nrf24_channel_changed, app);
     variable_item_set_current_value_index(item, current_nrf24_channel_index(app));
-    variable_item_set_current_value_text(item, nrf24_channel_labels[current_nrf24_channel_index(app)]);
+    variable_item_set_current_value_text(
+        item, nrf24_channel_labels[current_nrf24_channel_index(app)]);
 
-    item = variable_item_list_add(list, "Remove Cooldown Limit", 2, auto_test_remove_cooldown_changed, app);
-    variable_item_set_current_value_index(item, app->auto_test_config.remove_cooldown_limit ? 1 : 0);
-    variable_item_set_current_value_text(item, app->auto_test_config.remove_cooldown_limit ? "YES (Unsafe)" : "NO");
+    item = variable_item_list_add(
+        list, "Remove Cooldown Limit", 2, auto_test_remove_cooldown_changed, app);
+    variable_item_set_current_value_index(
+        item, app->auto_test_config.remove_cooldown_limit ? 1 : 0);
+    variable_item_set_current_value_text(
+        item, app->auto_test_config.remove_cooldown_limit ? "YES (Unsafe)" : "NO");
 
-    item = variable_item_list_add(list, "Remove All Restrictions", 2, auto_test_remove_all_restrictions_changed, app);
-    variable_item_set_current_value_index(item, app->auto_test_config.remove_all_restrictions ? 1 : 0);
-    variable_item_set_current_value_text(item, app->auto_test_config.remove_all_restrictions ? "YES (Unsafe)" : "NO");
+    item = variable_item_list_add(
+        list, "Remove All Restrictions", 2, auto_test_remove_all_restrictions_changed, app);
+    variable_item_set_current_value_index(
+        item, app->auto_test_config.remove_all_restrictions ? 1 : 0);
+    variable_item_set_current_value_text(
+        item, app->auto_test_config.remove_all_restrictions ? "YES (Unsafe)" : "NO");
 
     view_dispatcher_switch_to_view(app->view_dispatcher, RfViewVarList);
 }

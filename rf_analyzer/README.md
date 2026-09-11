@@ -147,7 +147,7 @@ rf_analyzer/
 ├── views/
 │   └── rf_analyzer_scan_view.[ch]   # custom live-scan view
 ├── scenes/                          # scene manager + one file per screen
-│   ├── rf_analyzer_scene_auto_test.[ch]  # Auto Inverse Test scene
+│   ├── rf_analyzer_scene_auto_test.c   # Auto Inverse Test scene
 │   └── ...
 ├── images/                          # 10x10 app icon
 └── docs/

@@ -58,7 +58,8 @@ void rf_analyzer_scene_scan_on_enter(void* context) {
     rf_scan_view_set_range(app->scan_view, app->config.freq_start, app->config.freq_end);
     rf_scan_view_set_ok_callback(app->scan_view, rf_scene_scan_ok_cb, app);
     rf_scan_view_set_back_callback(app->scan_view, rf_scene_scan_back_cb, app);
-    rf_scan_view_set_status(app->scan_view, app->config.freq_start, -110.0f, true, app->signal_count);
+    rf_scan_view_set_status(
+        app->scan_view, app->config.freq_start, -110.0f, true, app->signal_count);
 
     rf_scanner_start(app->scanner, &app->config);
 

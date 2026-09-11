@@ -50,39 +50,65 @@ struct RfScanner {
 
 const char* rf_preset_name(RfPreset preset) {
     switch(preset) {
-    case RfPresetOok650: return "OOK 650kHz";
-    case RfPresetOok270: return "OOK 270kHz";
-    case RfPreset2FskDev238: return "2-FSK 2.38k";
-    case RfPreset2FskDev476: return "2-FSK 47.6k";
-    default: return "?";
+    case RfPresetOok650:
+        return "OOK 650kHz";
+    case RfPresetOok270:
+        return "OOK 270kHz";
+    case RfPreset2FskDev238:
+        return "2-FSK 2.38k";
+    case RfPreset2FskDev476:
+        return "2-FSK 47.6k";
+    default:
+        return "?";
     }
 }
 
 FuriHalSubGhzPreset rf_preset_to_hal(RfPreset preset) {
     switch(preset) {
-    case RfPresetOok650: return FuriHalSubGhzPresetOok650Async;
-    case RfPresetOok270: return FuriHalSubGhzPresetOok270Async;
-    case RfPreset2FskDev238: return FuriHalSubGhzPreset2FSKDev238Async;
-    case RfPreset2FskDev476: return FuriHalSubGhzPreset2FSKDev476Async;
-    default: return FuriHalSubGhzPresetOok650Async;
+    case RfPresetOok650:
+        return FuriHalSubGhzPresetOok650Async;
+    case RfPresetOok270:
+        return FuriHalSubGhzPresetOok270Async;
+    case RfPreset2FskDev238:
+        return FuriHalSubGhzPreset2FSKDev238Async;
+    case RfPreset2FskDev476:
+        return FuriHalSubGhzPreset2FSKDev476Async;
+    default:
+        return FuriHalSubGhzPresetOok650Async;
     }
 }
 
 const char* rf_band_name(RfBand band) {
     switch(band) {
-    case RfBand300: return "300-348 MHz";
-    case RfBand433: return "387-464 MHz";
-    case RfBand868: return "779-928 MHz";
-    default: return "?";
+    case RfBand300:
+        return "300-348 MHz";
+    case RfBand433:
+        return "387-464 MHz";
+    case RfBand868:
+        return "779-928 MHz";
+    default:
+        return "?";
     }
 }
 
 void rf_band_bounds(RfBand band, uint32_t* start, uint32_t* end) {
     switch(band) {
-    case RfBand300: *start = 300000000; *end = 348000000; break;
-    case RfBand433: *start = 387000000; *end = 464000000; break;
-    case RfBand868: *start = 779000000; *end = 928000000; break;
-    default: *start = 433920000; *end = 433920000; break;
+    case RfBand300:
+        *start = 300000000;
+        *end = 348000000;
+        break;
+    case RfBand433:
+        *start = 387000000;
+        *end = 464000000;
+        break;
+    case RfBand868:
+        *start = 779000000;
+        *end = 928000000;
+        break;
+    default:
+        *start = 433920000;
+        *end = 433920000;
+        break;
     }
 }
 
@@ -205,8 +231,7 @@ static int32_t rf_scanner_thread(void* context) {
 RfScanner* rf_scanner_alloc(void) {
     RfScanner* scanner = malloc(sizeof(RfScanner));
     memset(scanner, 0, sizeof(RfScanner));
-    scanner->thread =
-        furi_thread_alloc_ex("RfScannerWorker", 2048, rf_scanner_thread, scanner);
+    scanner->thread = furi_thread_alloc_ex("RfScannerWorker", 2048, rf_scanner_thread, scanner);
     return scanner;
 }
 

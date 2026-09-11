@@ -1,7 +1,6 @@
 #include "rf_analyzer_i.h"
 #include "scenes/rf_analyzer_scene.h"
 #include "helpers/rf_analyzer_tx.h"
-#include "scenes/rf_analyzer_scene_auto_test.h"
 
 /*
  * RF Analyzer — application entry point, wiring and session state.
@@ -34,8 +33,8 @@ void rf_app_add_signal(RfAnalyzerApp* app, const RfSignal* signal) {
     }
     // New entry. Evict the oldest (index 0) when the list is full.
     if(app->signal_count >= RF_ANALYZER_MAX_SIGNALS) {
-        memmove(&app->signals[0], &app->signals[1],
-                sizeof(RfSignal) * (RF_ANALYZER_MAX_SIGNALS - 1));
+        memmove(
+            &app->signals[0], &app->signals[1], sizeof(RfSignal) * (RF_ANALYZER_MAX_SIGNALS - 1));
         app->signal_count = RF_ANALYZER_MAX_SIGNALS - 1;
     }
     app->signals[app->signal_count++] = *signal;
@@ -57,8 +56,10 @@ bool rf_app_add_freq(RfAnalyzerApp* app, uint32_t freq) {
 
 void rf_app_remove_freq(RfAnalyzerApp* app, uint8_t index) {
     if(index >= app->freq_list_count) return;
-    memmove(&app->freq_list[index], &app->freq_list[index + 1],
-            sizeof(uint32_t) * (app->freq_list_count - index - 1));
+    memmove(
+        &app->freq_list[index],
+        &app->freq_list[index + 1],
+        sizeof(uint32_t) * (app->freq_list_count - index - 1));
     app->freq_list_count--;
 }
 
@@ -88,8 +89,8 @@ static bool rf_analyzer_back_event_cb(void* context) {
 
 static void rf_analyzer_config_defaults(RfAnalyzerApp* app) {
     rf_band_bounds(RfBand433, &app->config.freq_start, &app->config.freq_end);
-    app->config.freq_step = 100000;    // 100 kHz
-    app->config.dwell_ms = 10;         // 10 ms per step
+    app->config.freq_step = 100000; // 100 kHz
+    app->config.dwell_ms = 10; // 10 ms per step
     app->config.rssi_trigger = -70.0f; // dBm
     app->config.preset = RfPresetOok650;
 
@@ -108,10 +109,8 @@ static RfAnalyzerApp* rf_analyzer_app_alloc(void) {
 
     view_dispatcher_set_event_callback_context(app->view_dispatcher, app);
     view_dispatcher_set_custom_event_callback(app->view_dispatcher, rf_analyzer_custom_event_cb);
-    view_dispatcher_set_navigation_event_callback(
-        app->view_dispatcher, rf_analyzer_back_event_cb);
-    view_dispatcher_attach_to_gui(
-        app->view_dispatcher, app->gui, ViewDispatcherTypeFullscreen);
+    view_dispatcher_set_navigation_event_callback(app->view_dispatcher, rf_analyzer_back_event_cb);
+    view_dispatcher_attach_to_gui(app->view_dispatcher, app->gui, ViewDispatcherTypeFullscreen);
 
     // Views
     app->submenu = submenu_alloc();
@@ -122,7 +121,8 @@ static RfAnalyzerApp* rf_analyzer_app_alloc(void) {
     app->widget = widget_alloc();
     view_dispatcher_add_view(app->view_dispatcher, RfViewWidget, widget_get_view(app->widget));
     app->scan_view = rf_scan_view_alloc();
-    view_dispatcher_add_view(app->view_dispatcher, RfViewScan, rf_scan_view_get_view(app->scan_view));
+    view_dispatcher_add_view(
+        app->view_dispatcher, RfViewScan, rf_scan_view_get_view(app->scan_view));
 
     // Initialise the Sub-GHz device registry once so the engines can resolve
     // the built-in CC1101 by name.

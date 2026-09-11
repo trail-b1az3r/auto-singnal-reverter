@@ -61,10 +61,8 @@ static void rf_scene_analyze_build(RfAnalyzerApp* app) {
     }
 
     // Always state the decode status plainly.
-    widget_add_string_element(
-        w, 126, 34, AlignRight, AlignBottom, FontSecondary, "proto:");
-    widget_add_string_element(
-        w, 126, 44, AlignRight, AlignBottom, FontSecondary, "not ID'd");
+    widget_add_string_element(w, 126, 34, AlignRight, AlignBottom, FontSecondary, "proto:");
+    widget_add_string_element(w, 126, 44, AlignRight, AlignBottom, FontSecondary, "not ID'd");
     widget_add_string_element(w, 126, 62, AlignRight, AlignBottom, FontSecondary, "Back:stop");
 }
 
@@ -82,8 +80,7 @@ void rf_analyzer_scene_analyze_on_enter(void* context) {
     rf_scene_analyze_build(app);
 
     if(rf_capture_start(app->capture, app->analyze_freq, app->config.preset)) {
-        app->ui_timer =
-            furi_timer_alloc(rf_scene_analyze_timer_cb, FuriTimerTypePeriodic, app);
+        app->ui_timer = furi_timer_alloc(rf_scene_analyze_timer_cb, FuriTimerTypePeriodic, app);
         furi_timer_start(app->ui_timer, furi_ms_to_ticks(ANALYZE_UI_REFRESH_MS));
     } else {
         widget_reset(app->widget);
